@@ -43,11 +43,9 @@
 
   <script>
   (() => {
-    // ── Canvas — full browser width ───────────────────────────────────────────
+    // ── Canvas ────────────────────────────────────────────────────────────────
     const canvas  = document.getElementById('sim');
     const ctx     = canvas.getContext('2d');
-
-    // Reserve pixels for header + status bar
     const HEADER_H = document.getElementById('header').offsetHeight;
     const STATUS_H = 28;
 
@@ -58,10 +56,11 @@
     resize();
     window.addEventListener('resize', () => { resize(); initLayout(); });
 
-    // ── Layout (recomputed on resize) ─────────────────────────────────────────
-    const NUM_LANES  = 4;
-    const LANE_H     = 38;
-    const HWY_H      = NUM_LANES * LANE_H;
+    // ── Layout ────────────────────────────────────────────────────────────────
+    const NUM_LANES = 4;
+    const LANE_H    = 38;
+    const HWY_H     = NUM_LANES * LANE_H;
+    const RAMP_DROP = 100;
 
     let W, H, HWY_TOP, HWY_BOT;
     let MERGE_X, SPLIT_X;
@@ -71,16 +70,13 @@
     let MERGE_CLEAR;
 
     function initLayout() {
-      W        = canvas.width;
-      H        = canvas.height;
-      // Centre highway vertically; ramps drop 100px below the highway
-      const RAMP_DROP = 100;
-      // Total content height = HWY_H + RAMP_DROP; centre that block
-      HWY_TOP  = Math.round((H - HWY_H - RAMP_DROP) / 2);
-      HWY_BOT  = HWY_TOP + HWY_H;
+      W       = canvas.width;
+      H       = canvas.height;
+      HWY_TOP = Math.round((H - HWY_H - RAMP_DROP) / 2);
+      HWY_BOT = HWY_TOP + HWY_H;
 
-      MERGE_X  = Math.round(W * 0.25);
-      SPLIT_X  = Math.round(W * 0.75);
+      MERGE_X = Math.round(W * 0.25);
+      SPLIT_X = Math.round(W * 0.75);
 
       RAMP_ON_X0  = MERGE_X - RAMP_DROP;
       RAMP_ON_Y0  = HWY_BOT + RAMP_DROP;
@@ -97,7 +93,9 @@
       SPLIT_ZONE_X1 = SPLIT_X - 60;
       SPLIT_ZONE_X2 = SPLIT_X + 60;
 
-      MERGE_CLEAR = CAR_W + 120; // wider gap required before merging
+      // Distance from merge/split point that must be clear before a ramp car
+      // commits to entering or a lane 4 car peels off.
+      MERGE_CLEAR = CAR_W + 120;
     }
 
     function laneCY(n) { return HWY_TOP + (n - 1) * LANE_H + LANE_H / 2; }
@@ -113,14 +111,12 @@
     let nextId     = 0;
 
     // ── Helpers ───────────────────────────────────────────────────────────────
-    function rndColor() {
-      const p = ['#E74C3C','#E67E22','#9B59B6','#3498DB','#1ABC9C',
-                 '#F39C12','#2ECC71','#E91E63','#00BCD4','#CDDC39','#FF5722'];
-      return p[Math.floor(Math.random() * p.length)];
-    }
+    const COLORS = ['#E74C3C','#E67E22','#9B59B6','#3498DB','#1ABC9C',
+                    '#F39C12','#2ECC71','#E91E63','#00BCD4','#CDDC39','#FF5722'];
+    function rndColor() { return COLORS[Math.floor(Math.random() * COLORS.length)]; }
 
     function makeCar(type, pos, speed, color) {
-      return { id: nextId++, type, pos, speed, color };
+      return { id: nextId++, type, pos, speed, color: color || rndColor() };
     }
 
     function rampPos(progress, type) {
@@ -136,47 +132,61 @@
       };
     }
 
-    // ── Initial cars ─────────────────────────────────────────────────────────
-    const cars = [
-      // Lane 1
-      makeCar('lane1', -60,   2.4, '#E74C3C'),
-      makeCar('lane1', -320,  2.1, '#9B59B6'),
-      makeCar('lane1', -600,  2.5, '#E67E22'),
-      makeCar('lane1', -880,  2.2, '#FF5722'),
-      // Lane 2
-      makeCar('lane2', -160,  2.0, '#3498DB'),
-      makeCar('lane2', -440,  2.3, '#1ABC9C'),
-      makeCar('lane2', -720,  1.9, '#00BCD4'),
-      makeCar('lane2', -1000, 2.1, '#F39C12'),
-      // Lane 3
-      makeCar('lane3', -240,  2.2, '#2ECC71'),
-      makeCar('lane3', -520,  1.8, '#E91E63'),
-      makeCar('lane3', -800,  2.0, '#CDDC39'),
-      makeCar('lane3', -1080, 2.3, '#9B59B6'),
-      // Lane 4 (ramp lane)
-      makeCar('lane4', -120,  1.9, '#F39C12'),
-      makeCar('lane4', -480,  2.1, '#3498DB'),
-      makeCar('lane4', -840,  1.8, '#E74C3C'),
-      // On-ramp cars
-      makeCar('onramp', -0.35, 0.006, '#2ECC71'),
-      makeCar('onramp', -0.85, 0.007, '#CDDC39'),
-    ];
+    // ── Car array ─────────────────────────────────────────────────────────────
+    // Cars are created dynamically; no fixed initial set.
+    // Spawning is handled by the spawn system below.
+    const cars = [];
+
+    // ── Spawn system ──────────────────────────────────────────────────────────
+    // Each lane has an independent spawn timer. When the timer fires and the
+    // entry zone is clear, a new car is created at the left edge.
+    const SPAWN_INTERVAL_MIN = 90;   // frames between spawns (min)
+    const SPAWN_INTERVAL_MAX = 180;  // frames between spawns (max)
+
+    const spawnTimers = { 1: 0, 2: 30, 3: 60, 4: 90 }; // staggered initial delays
+
+    function rndSpawnInterval() {
+      return SPAWN_INTERVAL_MIN + Math.floor(Math.random() * (SPAWN_INTERVAL_MAX - SPAWN_INTERVAL_MIN));
+    }
+
+    function trySpawnLane(n) {
+      spawnTimers[n]--;
+      if (spawnTimers[n] > 0) return;
+
+      // Check that the entry zone is clear
+      const entryX = 0;
+      const laneCars = cars.filter(c => c.type === `lane${n}`);
+      const blocked  = laneCars.some(c => c.pos < CAR_W + FOLLOW_GAP * 3);
+      if (!blocked) {
+        const speed = 1.8 + Math.random() * 0.7;
+        cars.push(makeCar(`lane${n}`, -CAR_W, speed));
+      }
+      spawnTimers[n] = rndSpawnInterval();
+    }
+
+    // Seed a few cars immediately so the highway isn't empty at start
+    function seedInitialCars() {
+      const offsets = [100, 320, 580, 860, 1150];
+      for (let n = 1; n <= 4; n++) {
+        offsets.forEach(off => {
+          const speed = 1.8 + Math.random() * 0.7;
+          cars.push(makeCar(`lane${n}`, -off, speed));
+        });
+      }
+      // Two on-ramp cars queued up
+      cars.push(makeCar('onramp', -0.30, 0.006));
+      cars.push(makeCar('onramp', -0.75, 0.007));
+    }
 
     // ── Bounding boxes ────────────────────────────────────────────────────────
-    // Every car — highway or ramp — gets an accurate pixel bounding box.
     function getBBox(car) {
-      const PAD = 1; // 1px inset to avoid touching-edge false positives
+      const PAD = 1;
       if (car.type.startsWith('lane')) {
         const n  = parseInt(car.type.slice(4));
         const cy = laneCY(n);
-        return {
-          x: car.pos + PAD,
-          y: cy - CAR_H / 2 + PAD,
-          w: CAR_W - PAD * 2,
-          h: CAR_H - PAD * 2,
-        };
+        return { x: car.pos + PAD, y: cy - CAR_H / 2 + PAD,
+                 w: CAR_W - PAD * 2, h: CAR_H - PAD * 2 };
       }
-      // Ramp cars: centre on their interpolated pixel position
       const { x, y } = rampPos(car.pos, car.type);
       const S = CAR_H / 2 - PAD;
       return { x: x - S, y: y - S, w: S * 2, h: S * 2 };
@@ -189,18 +199,20 @@
 
     // ── Update ────────────────────────────────────────────────────────────────
     function updateCars() {
+      // Build sorted lane arrays (furthest right = index 0 = leader)
       const lanes = {};
       for (let n = 1; n <= 4; n++) {
         lanes[n] = cars.filter(c => c.type === `lane${n}`)
                        .sort((a, b) => b.pos - a.pos);
       }
 
-      // --- Highway lanes ---
+      // ── Highway lanes ──
       for (let n = 1; n <= 4; n++) {
         lanes[n].forEach((car, i) => {
-          const leader = lanes[n][i - 1];
-          let maxMove  = car.speed;
+          const leader   = lanes[n][i - 1];
+          let maxMove    = car.speed;
 
+          // Leader-following: maintain FOLLOW_GAP behind the car ahead
           if (leader) {
             const gap = leader.pos - (car.pos + CAR_W) - FOLLOW_GAP;
             maxMove = Math.min(maxMove, Math.max(0, gap));
@@ -215,62 +227,71 @@
 
           car.pos += maxMove;
 
-          // Peel off to off-ramp (lane 4 only)
-          if (n === 4 && car.pos >= SPLIT_X && car.pos < SPLIT_X + 6 && Math.random() < 0.4) {
+          // ── Off-ramp peel-off (lane 4 only) ──
+          // A car may peel off only when it has fully cleared SPLIT_X
+          // (its back edge is past the split point) so there is no
+          // overlap with the lane 4 car behind it at the moment of
+          // type conversion. The 40% chance fires once per crossing.
+          if (n === 4 &&
+              car.pos > SPLIT_X + CAR_W &&          // back edge past split
+              car.pos < SPLIT_X + CAR_W + car.speed * 2 && // only in the crossing window
+              Math.random() < 0.4) {
             car.type  = 'offramp';
             car.pos   = 0;
             car.speed = 0.008 + Math.random() * 0.003;
+            return; // skip removal check this frame
           }
 
-          // Stagger re-entry by lane so cars from different lanes never
-          // wrap to the same x position and falsely collide off-screen
-          if (car.pos > W + CAR_W) car.pos = -(CAR_W + 20 + (n - 1) * 80);
+          // Remove cars that have left the right edge — no wrap-around
+          if (car.pos > W + CAR_W) {
+            const idx = cars.indexOf(car);
+            if (idx !== -1) cars.splice(idx, 1);
+          }
         });
       }
 
-      // --- On-ramp: leader-following + gap acceptance ---
+      // ── On-ramp: leader-following + gap acceptance ──
       const onrampCars = cars.filter(c => c.type === 'onramp')
                              .sort((a, b) => b.pos - a.pos);
-
-      const rampOnLen = Math.hypot(RAMP_ON_X1 - RAMP_ON_X0, RAMP_ON_Y1 - RAMP_ON_Y0);
+      const rampOnLen  = Math.hypot(RAMP_ON_X1 - RAMP_ON_X0, RAMP_ON_Y1 - RAMP_ON_Y0);
 
       onrampCars.forEach((car, i) => {
         const leader = onrampCars[i - 1];
         let maxMove  = car.speed;
 
-        // Keep gap behind ramp leader
+        // Leader-following on ramp
         if (leader) {
           const gapProg = (CAR_H + FOLLOW_GAP) / rampOnLen;
           const gap     = leader.pos - car.pos - gapProg;
-          if (gap <= 0) return; // fully blocked — don't move at all
+          if (gap <= 0) return;
           maxMove = Math.min(maxMove, gap);
         }
 
-        // Yield at merge point until lane 4 has a clear gap
-        // Start checking early and hard-cap progress so car never enters highway until clear
+        // Yield: check for a clear gap in lane 4 before committing
         if (car.pos > 0.60) {
           const blocked = lanes[4].some(hc => Math.abs(hc.pos - MERGE_X) < MERGE_CLEAR);
           if (blocked) {
-            car.pos = Math.min(car.pos, 0.94); // hold back from merge point
+            car.pos = Math.min(car.pos, 0.94);
             return;
           }
         }
 
         car.pos += maxMove;
 
+        // Merge: place the new lane 4 car one full car-length ahead of
+        // MERGE_X so its bounding box does not overlap the ramp bbox
         if (car.pos >= 1.0) {
           car.type  = 'lane4';
-          car.pos   = MERGE_X;
+          car.pos   = MERGE_X + CAR_W + FOLLOW_GAP;
           car.speed = 1.7 + Math.random() * 0.6;
-          // color intentionally preserved — car keeps its identity
+          // color preserved
         }
       });
 
-      // --- Off-ramp: leader-following ---
+      // ── Off-ramp: leader-following ──
       const offrampCars = cars.filter(c => c.type === 'offramp')
                               .sort((a, b) => b.pos - a.pos);
-
-      const rampOffLen = Math.hypot(RAMP_OFF_X1 - RAMP_OFF_X0, RAMP_OFF_Y1 - RAMP_OFF_Y0);
+      const rampOffLen  = Math.hypot(RAMP_OFF_X1 - RAMP_OFF_X0, RAMP_OFF_Y1 - RAMP_OFF_Y0);
 
       offrampCars.forEach((car, i) => {
         const leader = offrampCars[i - 1];
@@ -285,25 +306,31 @@
 
         car.pos += maxMove;
 
+        // Car exits the bottom of the off-ramp — remove it permanently
         if (car.pos > 1.1) {
-          car.type  = 'onramp';
-          car.pos   = -(0.2 + Math.random() * 0.8);
-          car.speed = 0.005 + Math.random() * 0.003;
-          // color intentionally preserved
+          const idx = cars.indexOf(car);
+          if (idx !== -1) cars.splice(idx, 1);
         }
       });
+
+      // ── Spawn new cars ──
+      for (let n = 1; n <= 4; n++) trySpawnLane(n);
+
+      // ── Occasionally spawn a new on-ramp car if ramp is empty or sparse ──
+      const onrampCount = cars.filter(c => c.type === 'onramp').length;
+      if (onrampCount < 3 && Math.random() < 0.005) {
+        // Find the rearmost on-ramp car to queue behind
+        const rearmost = onrampCars.length > 0
+          ? Math.min(...onrampCars.map(c => c.pos))
+          : 0;
+        const newPos = Math.min(rearmost - 0.25, -0.1);
+        cars.push(makeCar('onramp', newPos, 0.005 + Math.random() * 0.003));
+      }
     }
 
-    // ── Collision detection — ALL cars ────────────────────────────────────────
-    // Only check cars that are actually on the canvas surface.
-    // Off-screen cars (still approaching from the left) must be excluded
-    // to prevent false-positive crashes between invisible cars.
+    // ── Collision detection ───────────────────────────────────────────────────
     function isOnCanvas(car) {
-      if (car.type.startsWith('lane')) {
-        // Lane car is on-canvas once its front edge has entered the canvas
-        return car.pos + CAR_W >= 0 && car.pos <= W;
-      }
-      // Ramp cars: only while progress is in the visible 0..1 range
+      if (car.type.startsWith('lane')) return car.pos + CAR_W >= 0 && car.pos <= W;
       return car.pos >= 0 && car.pos <= 1.0;
     }
 
@@ -321,7 +348,7 @@
 
     // ── Draw ──────────────────────────────────────────────────────────────────
     function drawRoads() {
-      // Grass background
+      // Grass
       ctx.fillStyle = '#2d5a27';
       ctx.fillRect(0, 0, W, H);
 
@@ -332,6 +359,7 @@
       // Outer edge lines
       ctx.strokeStyle = '#ddd';
       ctx.lineWidth = 2.5;
+      ctx.setLineDash([]);
       ctx.beginPath();
       ctx.moveTo(0, HWY_TOP); ctx.lineTo(W, HWY_TOP);
       ctx.moveTo(0, HWY_BOT); ctx.lineTo(W, HWY_BOT);
@@ -387,10 +415,40 @@
       ctx.closePath();
       ctx.fill();
 
-      // Merge / split zone highlights
-      ctx.fillStyle = 'rgba(255,200,0,0.08)';
+      // ── MERGE_CLEAR boundary visualisation ──
+      // Two vertical dashed lines on lane 4 showing the zone that must be
+      // clear before an on-ramp car is allowed to merge.
       const l4top = HWY_TOP + 3 * LANE_H;
+      const l4bot = HWY_BOT;
+
+      // Merge zone fill (yellow tint)
+      ctx.fillStyle = 'rgba(255,200,0,0.10)';
       ctx.fillRect(MERGE_ZONE_X1, l4top, MERGE_ZONE_X2 - MERGE_ZONE_X1, LANE_H);
+
+      // MERGE_CLEAR boundary lines (cyan, dashed)
+      ctx.setLineDash([6, 5]);
+      ctx.strokeStyle = 'rgba(0,220,255,0.7)';
+      ctx.lineWidth = 1.5;
+      // Left boundary: MERGE_X - MERGE_CLEAR
+      ctx.beginPath();
+      ctx.moveTo(MERGE_X - MERGE_CLEAR, l4top);
+      ctx.lineTo(MERGE_X - MERGE_CLEAR, l4bot);
+      ctx.stroke();
+      // Right boundary: MERGE_X + MERGE_CLEAR
+      ctx.beginPath();
+      ctx.moveTo(MERGE_X + MERGE_CLEAR, l4top);
+      ctx.lineTo(MERGE_X + MERGE_CLEAR, l4bot);
+      ctx.stroke();
+      // Label
+      ctx.setLineDash([]);
+      ctx.fillStyle = 'rgba(0,220,255,0.75)';
+      ctx.font = '10px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText('◄── MERGE_CLEAR ──►', MERGE_X, l4top - 4);
+      ctx.textAlign = 'left';
+
+      // Split zone fill
+      ctx.fillStyle = 'rgba(255,200,0,0.08)';
       ctx.fillRect(SPLIT_ZONE_X1, l4top, SPLIT_ZONE_X2 - SPLIT_ZONE_X1, LANE_H);
 
       // Ramp labels
@@ -433,6 +491,7 @@
           const bb = getBBox(car);
           ctx.strokeStyle = '#FF4444';
           ctx.lineWidth = 3;
+          ctx.setLineDash([]);
           ctx.strokeRect(bb.x - 5, bb.y - 5, bb.w + 10, bb.h + 10);
         });
       });
@@ -477,8 +536,8 @@
       requestAnimationFrame(loop);
     }
 
-    // Initialise layout then start
     initLayout();
+    seedInitialCars();
     loop();
   })();
   </script>
