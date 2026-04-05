@@ -29,9 +29,9 @@
   </style>
 </head>
 <body>
-  <h1>Traffic Simulation — Highway</h1>
-  <p class="subtitle">Highway · On/Off Ramp · Collision detection · No stopping in merge zone</p>
-  <canvas id="sim" width="900" height="420"></canvas>
+  <h1>Traffic Simulation — 4-Lane Highway</h1>
+  <p class="subtitle">One-way (→) · 4 lanes · On/off ramp (lane 4) · Collision detection · No stopping in merge zone</p>
+  <canvas id="sim" width="960" height="420"></canvas>
   <div id="status">Running…</div>
 
   <script>
@@ -39,86 +39,66 @@
     // ── Canvas ────────────────────────────────────────────────────────────────
     const canvas = document.getElementById('sim');
     const ctx    = canvas.getContext('2d');
-    const W = canvas.width;   // 900
+    const W = canvas.width;   // 960
     const H = canvas.height;  // 420
 
     // ── Layout ────────────────────────────────────────────────────────────────
-    const LANE_H   = 34;
-    const HWY_TOP  = H / 2 - LANE_H;
-    const HWY_BOT  = H / 2 + LANE_H;
-    const HWY_MID  = H / 2;
-    const LANE1_CY = HWY_TOP + LANE_H / 2;   // lane 1 centre y (→)
-    const LANE2_CY = HWY_MID + LANE_H / 2;   // lane 2 centre y (←)
+    const NUM_LANES = 4;
+    const LANE_H    = 36;                          // height of each lane
+    const HWY_H     = NUM_LANES * LANE_H;          // total road height = 144
+    const HWY_TOP   = (H - HWY_H) / 2;            // top edge of road
+    const HWY_BOT   = HWY_TOP + HWY_H;            // bottom edge of road
+
+    // Centre-y of each lane (lane 1 = topmost, lane 4 = bottommost / rightmost)
+    function laneCY(n) { return HWY_TOP + (n - 1) * LANE_H + LANE_H / 2; }
 
     // Car dimensions
-    const CAR_W = 38;
-    const CAR_H = 18;
+    const CAR_W     = 38;
+    const CAR_H     = 20;
     const FOLLOW_GAP = 10;
 
-    // Ramp merge / split x positions
-    const MERGE_X = 260;
-    const SPLIT_X = 640;
-    const RAMP_BOTTOM_Y = H - 40;
-
-    // On-ramp origin (bottom-left)
-    const RAMP_ON_X0  = MERGE_X - 210;
-    const RAMP_ON_Y0  = RAMP_BOTTOM_Y;
-    // On-ramp destination (highway lane 1 at MERGE_X)
+    // Ramp geometry — attached to lane 4 (bottom lane)
+    // On-ramp: enters from bottom-left, merges into lane 4 at MERGE_X
+    const MERGE_X     = 240;
+    const RAMP_ON_X0  = MERGE_X - 180;
+    const RAMP_ON_Y0  = H - 30;
     const RAMP_ON_X1  = MERGE_X;
-    const RAMP_ON_Y1  = LANE1_CY;
+    const RAMP_ON_Y1  = laneCY(4);
 
-    // Off-ramp origin (highway lane 1 at SPLIT_X)
+    // Off-ramp: exits lane 4 at SPLIT_X, goes to bottom-right
+    const SPLIT_X     = 720;
     const RAMP_OFF_X0 = SPLIT_X;
-    const RAMP_OFF_Y0 = LANE1_CY;
-    // Off-ramp destination (bottom-right)
-    const RAMP_OFF_X1 = SPLIT_X + 210;
-    const RAMP_OFF_Y1 = RAMP_BOTTOM_Y;
+    const RAMP_OFF_Y0 = laneCY(4);
+    const RAMP_OFF_X1 = SPLIT_X + 180;
+    const RAMP_OFF_Y1 = H - 30;
 
-    // Merge zone: cars inside this range on lane 1 must not stop
-    const MERGE_ZONE_X1 = MERGE_X - 50;
-    const MERGE_ZONE_X2 = MERGE_X + 50;
-    const SPLIT_ZONE_X1 = SPLIT_X - 50;
-    const SPLIT_ZONE_X2 = SPLIT_X + 50;
+    // Merge / split zones — cars inside must not stop
+    const MERGE_ZONE_X1 = MERGE_X - 55;
+    const MERGE_ZONE_X2 = MERGE_X + 55;
+    const SPLIT_ZONE_X1 = SPLIT_X - 55;
+    const SPLIT_ZONE_X2 = SPLIT_X + 55;
 
-    // Minimum gap in lane 1 required for an on-ramp car to merge
-    const MERGE_CLEAR = CAR_W + 60;
+    // Gap required in lane 4 for an on-ramp car to merge
+    const MERGE_CLEAR = CAR_W + 70;
 
     // ── State ─────────────────────────────────────────────────────────────────
     let crashed    = false;
     let crashPairs = [];
     let nextId     = 0;
 
-    // ── Car factory ──────────────────────────────────────────────────────────
-    // type: 'h1' (→), 'h2' (←), 'onramp' (progress 0→1), 'offramp' (progress 0→1)
+    // ── Helpers ───────────────────────────────────────────────────────────────
+    function rndColor() {
+      const p = ['#E74C3C','#E67E22','#9B59B6','#3498DB','#1ABC9C',
+                 '#F39C12','#2ECC71','#E91E63','#00BCD4','#CDDC39','#FF5722'];
+      return p[Math.floor(Math.random() * p.length)];
+    }
+
+    // car.type: 'lane1'..'lane4', 'onramp', 'offramp'
+    // car.pos: x position for lane cars; 0→1 progress for ramp cars
     function makeCar(type, pos, speed, color) {
       return { id: nextId++, type, pos, speed, color };
     }
 
-    function rndColor() {
-      const p = ['#E74C3C','#E67E22','#9B59B6','#3498DB','#1ABC9C',
-                 '#F39C12','#2ECC71','#E91E63','#00BCD4','#CDDC39'];
-      return p[Math.floor(Math.random() * p.length)];
-    }
-
-    // ── Initial cars ─────────────────────────────────────────────────────────
-    const cars = [
-      // Lane 1 (→) — staggered starts well off screen
-      makeCar('h1', -100,  2.2, '#E74C3C'),
-      makeCar('h1', -320,  2.0, '#E67E22'),
-      makeCar('h1', -560,  2.3, '#9B59B6'),
-      makeCar('h1', -800,  1.9, '#F39C12'),
-      // Lane 2 (←)
-      makeCar('h2', W+100, 2.1, '#3498DB'),
-      makeCar('h2', W+340, 1.8, '#1ABC9C'),
-      makeCar('h2', W+580, 2.2, '#E91E63'),
-      makeCar('h2', W+820, 2.0, '#00BCD4'),
-      // On-ramp cars: progress = 0 (bottom) → 1 (merge point)
-      // Start them well below 0 so they don't immediately merge
-      makeCar('onramp', -0.4, 0.006, '#2ECC71'),
-      makeCar('onramp', -0.9, 0.007, '#CDDC39'),
-    ];
-
-    // ── Geometry helpers ──────────────────────────────────────────────────────
     function rampPos(progress, type) {
       if (type === 'onramp') {
         return {
@@ -132,19 +112,42 @@
       };
     }
 
-    // Tight axis-aligned bounding box for collision detection
-    // Ramp cars use a small square; highway cars use a slim rectangle
+    // ── Initial cars ─────────────────────────────────────────────────────────
+    // Stagger cars across all four lanes, well off the left edge
+    const cars = [
+      // Lane 1
+      makeCar('lane1', -60,   2.4, '#E74C3C'),
+      makeCar('lane1', -300,  2.1, '#9B59B6'),
+      makeCar('lane1', -560,  2.5, '#E67E22'),
+      makeCar('lane1', -800,  2.2, '#FF5722'),
+      // Lane 2
+      makeCar('lane2', -140,  2.0, '#3498DB'),
+      makeCar('lane2', -380,  2.3, '#1ABC9C'),
+      makeCar('lane2', -640,  1.9, '#00BCD4'),
+      makeCar('lane2', -880,  2.1, '#F39C12'),
+      // Lane 3
+      makeCar('lane3', -220,  2.2, '#2ECC71'),
+      makeCar('lane3', -460,  1.8, '#E91E63'),
+      makeCar('lane3', -700,  2.0, '#CDDC39'),
+      makeCar('lane3', -940,  2.3, '#9B59B6'),
+      // Lane 4 (rightmost — ramp lane)
+      makeCar('lane4', -100,  1.9, '#F39C12'),
+      makeCar('lane4', -420,  2.1, '#3498DB'),
+      makeCar('lane4', -720,  1.8, '#E74C3C'),
+      // On-ramp cars (progress: 0 = bottom of ramp, 1 = merge point)
+      makeCar('onramp', -0.3, 0.006, '#2ECC71'),
+      makeCar('onramp', -0.8, 0.007, '#CDDC39'),
+    ];
+
+    // ── Bounding boxes ────────────────────────────────────────────────────────
     function getBBox(car) {
-      const PAD = 2; // shrink box slightly to avoid edge-touch false positives
-      if (car.type === 'h1') {
-        return { x: car.pos + PAD, y: LANE1_CY - CAR_H/2 + PAD,
+      const PAD = 2;
+      if (car.type.startsWith('lane')) {
+        const n  = parseInt(car.type.slice(4));
+        const cy = laneCY(n);
+        return { x: car.pos + PAD, y: cy - CAR_H/2 + PAD,
                  w: CAR_W - PAD*2, h: CAR_H - PAD*2 };
       }
-      if (car.type === 'h2') {
-        return { x: car.pos + PAD, y: LANE2_CY - CAR_H/2 + PAD,
-                 w: CAR_W - PAD*2, h: CAR_H - PAD*2 };
-      }
-      // Ramp cars: only check when visible on canvas
       const { x, y } = rampPos(car.pos, car.type);
       const S = CAR_H / 2 - PAD;
       return { x: x - S, y: y - S, w: S*2, h: S*2 };
@@ -157,67 +160,61 @@
 
     // ── Update ────────────────────────────────────────────────────────────────
     function updateCars() {
-      // Sorted lane arrays for leader-following
-      const lane1 = cars.filter(c => c.type === 'h1').sort((a,b) => b.pos - a.pos);
-      const lane2 = cars.filter(c => c.type === 'h2').sort((a,b) => a.pos - b.pos);
+      // Build sorted lane arrays (rightmost car first = highest x first)
+      const lanes = {};
+      for (let n = 1; n <= 4; n++) {
+        lanes[n] = cars.filter(c => c.type === `lane${n}`)
+                       .sort((a, b) => b.pos - a.pos);
+      }
 
-      // --- Lane 1 (→) ---
-      lane1.forEach((car, i) => {
-        const leader = lane1[i - 1];
-        let maxMove  = car.speed;
+      // --- Highway lanes (all go →) ---
+      for (let n = 1; n <= 4; n++) {
+        lanes[n].forEach((car, i) => {
+          const leader  = lanes[n][i - 1];
+          let maxMove   = car.speed;
 
-        if (leader) {
-          const gap = leader.pos - (car.pos + CAR_W) - FOLLOW_GAP;
-          maxMove = Math.min(maxMove, Math.max(0, gap));
-        }
+          // Follow leader
+          if (leader) {
+            const gap = leader.pos - (car.pos + CAR_W) - FOLLOW_GAP;
+            maxMove = Math.min(maxMove, Math.max(0, gap));
+          }
 
-        // No stopping inside merge or split zone
-        const inZone = (car.pos + CAR_W > MERGE_ZONE_X1 && car.pos < MERGE_ZONE_X2) ||
-                       (car.pos + CAR_W > SPLIT_ZONE_X1 && car.pos < SPLIT_ZONE_X2);
-        if (inZone) maxMove = Math.max(maxMove, 1);
+          // Rule: no stopping inside merge or split zone (lane 4 only)
+          if (n === 4) {
+            const inZone = (car.pos + CAR_W > MERGE_ZONE_X1 && car.pos < MERGE_ZONE_X2) ||
+                           (car.pos + CAR_W > SPLIT_ZONE_X1 && car.pos < SPLIT_ZONE_X2);
+            if (inZone) maxMove = Math.max(maxMove, 1);
+          }
 
-        car.pos += maxMove;
+          car.pos += maxMove;
 
-        // Randomly convert to off-ramp when passing SPLIT_X
-        if (car.pos >= SPLIT_X && car.pos < SPLIT_X + 10 && Math.random() < 0.35) {
-          car.type  = 'offramp';
-          car.pos   = 0;
-          car.speed = 0.008 + Math.random() * 0.003;
-        }
+          // Randomly peel off to off-ramp when passing SPLIT_X (lane 4 only)
+          if (n === 4 && car.pos >= SPLIT_X && car.pos < SPLIT_X + 6 && Math.random() < 0.4) {
+            car.type  = 'offramp';
+            car.pos   = 0;
+            car.speed = 0.008 + Math.random() * 0.003;
+          }
 
-        if (car.pos > W + CAR_W) car.pos = -CAR_W - 20;
-      });
-
-      // --- Lane 2 (←) ---
-      lane2.forEach((car, i) => {
-        const leader = lane2[i - 1];
-        let maxMove  = car.speed;
-
-        if (leader) {
-          const gap = car.pos - (leader.pos + CAR_W) - FOLLOW_GAP;
-          maxMove = Math.min(maxMove, Math.max(0, gap));
-        }
-
-        car.pos -= maxMove;
-        if (car.pos < -CAR_W * 2) car.pos = W + CAR_W + 20;
-      });
+          // Wrap around
+          if (car.pos > W + CAR_W) car.pos = -CAR_W - 20;
+        });
+      }
 
       // --- On-ramp ---
       cars.filter(c => c.type === 'onramp').forEach(car => {
-        // Only check gap when close to merge point
-        if (car.pos > 0.75) {
-          // Find nearest lane1 car to MERGE_X
-          const blocked = lane1.some(hc => Math.abs(hc.pos - MERGE_X) < MERGE_CLEAR);
-          if (blocked) return; // yield — wait on ramp
+        // Yield when close to merge point — wait for a gap in lane 4
+        if (car.pos > 0.72) {
+          const blocked = lanes[4].some(hc => Math.abs(hc.pos - MERGE_X) < MERGE_CLEAR);
+          if (blocked) return;
         }
 
         car.pos += car.speed;
 
         if (car.pos >= 1.0) {
-          // Merge into lane 1
-          car.type  = 'h1';
+          // Merge into lane 4
+          car.type  = 'lane4';
           car.pos   = MERGE_X;
-          car.speed = 1.8 + Math.random() * 0.5;
+          car.speed = 1.7 + Math.random() * 0.6;
           car.color = rndColor();
         }
       });
@@ -228,7 +225,7 @@
         if (car.pos > 1.1) {
           // Recycle as a new on-ramp car
           car.type  = 'onramp';
-          car.pos   = -(0.3 + Math.random() * 0.7);
+          car.pos   = -(0.2 + Math.random() * 0.8);
           car.speed = 0.005 + Math.random() * 0.003;
           car.color = rndColor();
         }
@@ -236,16 +233,9 @@
     }
 
     // ── Collision detection ───────────────────────────────────────────────────
-    // Only check cars that are actually on the visible highway surface
-    // (skip ramp cars that haven't reached the highway yet)
-    function isOnHighway(car) {
-      if (car.type === 'h1' || car.type === 'h2') return true;
-      // Ramp cars are "on highway" only once merged (handled by type change)
-      return false;
-    }
-
     function checkCollisions() {
-      const active = cars.filter(isOnHighway);
+      // Only check cars that are on the highway surface
+      const active = cars.filter(c => c.type.startsWith('lane'));
       for (let i = 0; i < active.length; i++) {
         for (let j = i + 1; j < active.length; j++) {
           if (boxesOverlap(getBBox(active[i]), getBBox(active[j]))) {
@@ -264,90 +254,102 @@
 
       // Highway surface
       ctx.fillStyle = '#555';
-      ctx.fillRect(0, HWY_TOP, W, LANE_H * 2);
+      ctx.fillRect(0, HWY_TOP, W, HWY_H);
 
-      // Edge lines
+      // Outer edge lines (solid white)
       ctx.strokeStyle = '#ddd';
-      ctx.lineWidth = 2;
+      ctx.lineWidth = 2.5;
       ctx.beginPath();
       ctx.moveTo(0, HWY_TOP); ctx.lineTo(W, HWY_TOP);
       ctx.moveTo(0, HWY_BOT); ctx.lineTo(W, HWY_BOT);
       ctx.stroke();
 
-      // Centre dashes
-      ctx.setLineDash([28, 18]);
-      ctx.strokeStyle = '#FFD700';
-      ctx.lineWidth = 2.5;
-      ctx.beginPath();
-      ctx.moveTo(0, HWY_MID); ctx.lineTo(W, HWY_MID);
-      ctx.stroke();
+      // Inner lane dividers (dashed white)
+      ctx.setLineDash([24, 16]);
+      ctx.strokeStyle = 'rgba(255,255,255,0.55)';
+      ctx.lineWidth = 1.5;
+      for (let n = 1; n < NUM_LANES; n++) {
+        const y = HWY_TOP + n * LANE_H;
+        ctx.beginPath();
+        ctx.moveTo(0, y); ctx.lineTo(W, y);
+        ctx.stroke();
+      }
       ctx.setLineDash([]);
 
-      // Direction arrows
-      ctx.fillStyle = 'rgba(255,255,255,0.13)';
-      ctx.font = 'bold 16px sans-serif';
+      // Direction arrows (subtle)
+      ctx.fillStyle = 'rgba(255,255,255,0.12)';
+      ctx.font = 'bold 15px sans-serif';
       ctx.textAlign = 'center';
-      for (let ax = 70; ax < W; ax += 150) {
-        ctx.fillText('→', ax, LANE1_CY + 6);
-        ctx.fillText('←', ax, LANE2_CY + 6);
+      for (let n = 1; n <= NUM_LANES; n++) {
+        for (let ax = 70; ax < W; ax += 140) {
+          ctx.fillText('→', ax, laneCY(n) + 6);
+        }
       }
       ctx.textAlign = 'left';
+
+      // Lane number labels (left edge)
+      ctx.fillStyle = 'rgba(255,255,255,0.3)';
+      ctx.font = '11px sans-serif';
+      for (let n = 1; n <= NUM_LANES; n++) {
+        ctx.fillText(`L${n}`, 6, laneCY(n) + 4);
+      }
 
       // ── On-ramp surface ──
       ctx.fillStyle = '#4a4a4a';
       ctx.beginPath();
-      ctx.moveTo(RAMP_ON_X0 - 12, RAMP_ON_Y0);
-      ctx.lineTo(RAMP_ON_X0 + 12, RAMP_ON_Y0);
-      ctx.lineTo(RAMP_ON_X1 + 10, RAMP_ON_Y1);
-      ctx.lineTo(RAMP_ON_X1 - 10, RAMP_ON_Y1);
+      ctx.moveTo(RAMP_ON_X0 - 13, RAMP_ON_Y0);
+      ctx.lineTo(RAMP_ON_X0 + 13, RAMP_ON_Y0);
+      ctx.lineTo(RAMP_ON_X1 + 11, RAMP_ON_Y1);
+      ctx.lineTo(RAMP_ON_X1 - 11, RAMP_ON_Y1);
       ctx.closePath();
       ctx.fill();
 
       // ── Off-ramp surface ──
       ctx.fillStyle = '#4a4a4a';
       ctx.beginPath();
-      ctx.moveTo(RAMP_OFF_X0 - 10, RAMP_OFF_Y0);
-      ctx.lineTo(RAMP_OFF_X0 + 10, RAMP_OFF_Y0);
-      ctx.lineTo(RAMP_OFF_X1 + 12, RAMP_OFF_Y1);
-      ctx.lineTo(RAMP_OFF_X1 - 12, RAMP_OFF_Y1);
+      ctx.moveTo(RAMP_OFF_X0 - 11, RAMP_OFF_Y0);
+      ctx.lineTo(RAMP_OFF_X0 + 11, RAMP_OFF_Y0);
+      ctx.lineTo(RAMP_OFF_X1 + 13, RAMP_OFF_Y1);
+      ctx.lineTo(RAMP_OFF_X1 - 13, RAMP_OFF_Y1);
       ctx.closePath();
       ctx.fill();
 
-      // Merge zone subtle highlight (lane 1 only)
-      ctx.fillStyle = 'rgba(255,200,0,0.08)';
-      ctx.fillRect(MERGE_ZONE_X1, HWY_TOP, MERGE_ZONE_X2 - MERGE_ZONE_X1, LANE_H);
-      ctx.fillRect(SPLIT_ZONE_X1, HWY_TOP, SPLIT_ZONE_X2 - SPLIT_ZONE_X1, LANE_H);
+      // Merge / split zone highlights on lane 4
+      ctx.fillStyle = 'rgba(255,200,0,0.09)';
+      const l4top = HWY_TOP + 3 * LANE_H;
+      ctx.fillRect(MERGE_ZONE_X1, l4top, MERGE_ZONE_X2 - MERGE_ZONE_X1, LANE_H);
+      ctx.fillRect(SPLIT_ZONE_X1, l4top, SPLIT_ZONE_X2 - SPLIT_ZONE_X1, LANE_H);
 
-      // Labels
+      // Ramp labels
       ctx.fillStyle = '#bbb';
       ctx.font = '11px sans-serif';
       ctx.fillText('ON RAMP',  RAMP_ON_X0  - 12, RAMP_ON_Y0  + 18);
-      ctx.fillText('OFF RAMP', RAMP_OFF_X1 - 50, RAMP_OFF_Y1 + 18);
+      ctx.fillText('OFF RAMP', RAMP_OFF_X1 - 55, RAMP_OFF_Y1 + 18);
     }
 
     function drawCar(car) {
-      if (car.type === 'h1' || car.type === 'h2') {
-        const cy   = car.type === 'h1' ? LANE1_CY : LANE2_CY;
-        const flip = car.type === 'h2';
-        drawCarRect(car.pos, cy - CAR_H/2, CAR_W, CAR_H, car.color, flip);
+      if (car.type.startsWith('lane')) {
+        const n  = parseInt(car.type.slice(4));
+        const cy = laneCY(n);
+        drawCarRect(car.pos, cy - CAR_H/2, CAR_W, CAR_H, car.color);
         return;
       }
       if (car.type === 'onramp' || car.type === 'offramp') {
-        if (car.pos < 0 || car.pos > 1.05) return; // off-screen
+        if (car.pos < 0 || car.pos > 1.05) return;
         const { x, y } = rampPos(car.pos, car.type);
         if (x < 0 || x > W || y < 0 || y > H) return;
         const s = CAR_H;
-        drawCarRect(x - s/2, y - s/2, s, s, car.color, false);
+        drawCarRect(x - s/2, y - s/2, s, s, car.color);
       }
     }
 
-    function drawCarRect(x, y, w, h, color, flip) {
+    function drawCarRect(x, y, w, h, color) {
+      // Body
       ctx.fillStyle = color;
       ctx.fillRect(x, y, w, h);
-      // Windshield
+      // Windshield (front-right)
       ctx.fillStyle = '#AED6F1';
-      if (!flip) ctx.fillRect(x + w - 13, y + 3, 9, h - 6);
-      else       ctx.fillRect(x + 4,      y + 3, 9, h - 6);
+      ctx.fillRect(x + w - 13, y + 3, 9, h - 6);
       // Wheels
       ctx.fillStyle = '#111';
       ctx.fillRect(x + 4,      y + h - 3, 9, 5);
@@ -358,7 +360,6 @@
       ctx.fillStyle = 'rgba(0,0,0,0.55)';
       ctx.fillRect(0, 0, W, H);
 
-      // Highlight crashed cars
       crashPairs.forEach(([a, b]) => {
         [a, b].forEach(car => {
           const bb = getBBox(car);
@@ -368,8 +369,7 @@
         });
       });
 
-      // Banner
-      const bw = 380, bh = 86;
+      const bw = 390, bh = 86;
       const bx = W/2 - bw/2, by = H/2 - bh/2;
       ctx.fillStyle = '#C0392B';
       ctx.beginPath();
