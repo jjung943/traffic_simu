@@ -16,10 +16,10 @@ Start with a browser-based version that is easy to run and easy to iterate on.
 - Keep simulation logic separate from rendering when possible
 
 ## Current priority
-Set up the initial app structure and get the first visual simulation running.
+Begin implementing Phase 3: Traffic Behavior (multiple cars, intersections, stop/go logic).
 
 ## First milestone
-Render a simple road layout and make one car move.
+Render a simple road layout and make one car move. (Completed)
 
 ## Notes for AI tools
 - Read README.md and this file first
