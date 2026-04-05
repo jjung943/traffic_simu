@@ -278,10 +278,25 @@
           }
 
           // No stopping in merge/split zone (lane 4)
+          // IMPORTANT: only raise the floor if there is no leader immediately ahead.
+          // Never override the leader-following gap — that would cause rear-ends.
           if (n === 4) {
             const inZone = (car.pos + CAR_W > MERGE_ZONE_X1 && car.pos < MERGE_ZONE_X2) ||
                            (car.pos + CAR_W > SPLIT_ZONE_X1 && car.pos < SPLIT_ZONE_X2);
-            if (inZone) maxMove = Math.max(maxMove, 1);
+            if (inZone && !leader) maxMove = Math.max(maxMove, 1);
+          }
+
+          // Ramp-awareness (lane 4 only): if a committed on-ramp car (progress > 0.75)
+          // is approaching, slow down approaching lane 4 cars to open a gap.
+          // Only applies to cars that haven't yet passed MERGE_X.
+          if (n === 4 && car.pos + CAR_W < MERGE_X) {
+            const hasCommitted = cars.some(
+              c => c.type === 'onramp' && c.pos > 0.75
+            );
+            if (hasCommitted) {
+              // Slow to half speed to open a gap ahead of the merge point
+              maxMove = Math.min(maxMove, car.speed * 0.5);
+            }
           }
 
           car.pos += maxMove;
@@ -295,9 +310,10 @@
               car.pos > SPLIT_X + CAR_W &&          // back edge past split
               car.pos < SPLIT_X + CAR_W + car.speed * 2 && // only in the crossing window
               Math.random() < 0.4) {
-            car.type  = 'offramp';
-            car.pos   = 0;
-            car.speed = 0.008 + Math.random() * 0.003;
+            car.type         = 'offramp';
+            car.pos          = 0;
+            car.speed        = 0.008 + Math.random() * 0.003;
+            car.mergingFrames = 30; // grace period: skip collision checks during peel-off
             return; // skip removal check this frame
           }
 
@@ -326,23 +342,44 @@
           maxMove = Math.min(maxMove, gap);
         }
 
-        // Yield: check for a clear gap in lane 4 before committing
-        if (car.pos > 0.60) {
+        // ── Two-phase merge commitment ──
+        // YIELD ZONE (0.60 – 0.75): car may slow to a crawl while waiting for a gap.
+        //   It never fully stops — minimum 15% speed so it keeps creeping forward.
+        // COMMITTED (> 0.75): car has passed the point of no return.
+        //   It ignores the gap check and always moves at least 0.5px/frame.
+        //   The lane 4 no-stopping-in-merge-zone rule ensures space is made.
+        if (car.pos > 0.60 && car.pos <= 0.75) {
           const blocked = lanes[4].some(hc => Math.abs(hc.pos - MERGE_X) < MERGE_CLEAR);
           if (blocked) {
-            car.pos = Math.min(car.pos, 0.94);
-            return;
+            maxMove = Math.max(car.speed * 0.15, 0.5 / rampOnLen);
           }
+        } else if (car.pos > 0.75) {
+          // Committed — enforce minimum forward progress regardless of anything
+          maxMove = Math.max(maxMove, 0.5 / rampOnLen);
         }
 
         car.pos += maxMove;
 
-        // Merge: place the new lane 4 car one full car-length ahead of
-        // MERGE_X so its bounding box does not overlap the ramp bbox
+        // Merge: insert behind the rearmost lane 4 car that has already
+        // passed MERGE_X, or just ahead of MERGE_X if the lane is clear.
+        // This guarantees the new car never spawns on top of an existing one.
         if (car.pos >= 1.0) {
-          car.type  = 'lane4';
-          car.pos   = MERGE_X + CAR_W + FOLLOW_GAP;
-          car.speed = 1.7 + Math.random() * 0.6;
+          const lane4Ahead = cars
+            .filter(c => c.type === 'lane4' && c.pos >= MERGE_X)
+            .sort((a, b) => a.pos - b.pos); // sort ascending — rearmost first
+          let insertPos;
+          if (lane4Ahead.length > 0) {
+            const rearmost = lane4Ahead[0];
+            insertPos = rearmost.pos - CAR_W - FOLLOW_GAP * 2;
+          } else {
+            insertPos = MERGE_X + FOLLOW_GAP;
+          }
+          // Safety: never insert behind MERGE_X (would be off-ramp side)
+          insertPos = Math.max(insertPos, MERGE_X + FOLLOW_GAP);
+          car.type         = 'lane4';
+          car.pos          = insertPos;
+          car.speed        = 1.7 + Math.random() * 0.6;
+          car.mergingFrames = 30; // grace period: skip collision checks for 30 frames
           // color preserved
         }
       });
@@ -372,6 +409,9 @@
         }
       });
 
+      // ── Tick down merge grace periods ──
+      cars.forEach(c => { if (c.mergingFrames > 0) c.mergingFrames--; });
+
       // ── Spawn new cars ──
       for (let n = 1; n <= 4; n++) trySpawnLane(n);
 
@@ -390,18 +430,38 @@
       }
     }
 
-    // ── Collision detection ───────────────────────────────────────────────────
-    function isOnCanvas(car) {
-      if (car.type.startsWith('lane')) return car.pos + CAR_W >= 0 && car.pos <= W;
-      return car.pos >= 0 && car.pos <= 1.0;
-    }
-
+     // ── Collision detection ─────────────────────────────────────────────────
+    // Rules:
+    //  • Highway cars (lane1–4) only collide with other highway cars.
+    //  • Ramp cars (onramp/offramp) only collide with other ramp cars.
+    //  • Cars in a merge grace period are excluded entirely.
+    // This prevents false positives at the merge/split point where a ramp
+    // car and a lane car briefly share the same pixel during the transition.
     function checkCollisions() {
-      const active = cars.filter(isOnCanvas);
-      for (let i = 0; i < active.length; i++) {
-        for (let j = i + 1; j < active.length; j++) {
-          if (boxesOverlap(getBBox(active[i]), getBBox(active[j]))) {
-            crashPairs.push([active[i], active[j]]);
+      const highwayCars = cars.filter(c =>
+        !c.mergingFrames &&
+        c.type.startsWith('lane') &&
+        c.pos + CAR_W >= 0 && c.pos <= W
+      );
+      const rampCars = cars.filter(c =>
+        !c.mergingFrames &&
+        (c.type === 'onramp' || c.type === 'offramp') &&
+        c.pos >= 0 && c.pos <= 1.0
+      );
+
+      // Check highway cars against each other
+      for (let i = 0; i < highwayCars.length; i++) {
+        for (let j = i + 1; j < highwayCars.length; j++) {
+          if (boxesOverlap(getBBox(highwayCars[i]), getBBox(highwayCars[j]))) {
+            crashPairs.push([highwayCars[i], highwayCars[j]]);
+          }
+        }
+      }
+      // Check ramp cars against each other
+      for (let i = 0; i < rampCars.length; i++) {
+        for (let j = i + 1; j < rampCars.length; j++) {
+          if (boxesOverlap(getBBox(rampCars[i]), getBBox(rampCars[j]))) {
+            crashPairs.push([rampCars[i], rampCars[j]]);
           }
         }
       }
