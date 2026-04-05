@@ -183,7 +183,7 @@
   <div id="main-content">
   <div id="header">
     <h1>Traffic Simulation — 4-Lane Highway</h1>
-    <p>One-way (→) · 4 lanes · On/off ramp (lane 4) · Realism-first physics</p>
+    <p>One-way (→) · 4 lanes · On/off ramp (lane 4) · IDM car-following · MOBIL lane-changing</p>
     <div id="top-controls">
       <label for="volumeSlider">Traffic Volume:</label>
       <input type="range" id="volumeSlider" min="1" max="10" value="5" step="1" />
@@ -207,33 +207,33 @@
     <h2>Driver Characteristics</h2>
     <p style="font-size:0.68rem;color:#555;margin-top:-8px;">Applied to new cars. Existing cars keep their assigned values.</p>
 
-    <!-- Speed -->
+    <!-- Desired Speed (v0) -->
     <div class="char-block">
-      <div class="char-block-title">💨 Speed</div>
+      <div class="char-block-title">💨 Desired Speed (v₀)</div>
       <div class="char-row">
         <label for="speedMean">μ (mean)</label>
-        <input type="number" id="speedMean" value="15.7" min="1" max="50" step="0.5" />
+        <input type="number" id="speedMean" value="28" min="5" max="50" step="1" />
       </div>
       <div class="char-row">
         <label for="speedSd">σ (spread)</label>
-        <input type="number" id="speedSd" value="2.9" min="0" max="20" step="0.5" />
+        <input type="number" id="speedSd" value="4" min="0" max="20" step="0.5" />
       </div>
-      <div class="char-unit">Units: m/s &nbsp;|  μ=15.7 ≈ 56 km/h</div>
+      <div class="char-unit">Units: m/s &nbsp;|  μ=28 ≈ 101 km/h</div>
       <canvas class="bell-canvas" id="bellSpeed"></canvas>
     </div>
 
-    <!-- Follow gap -->
+    <!-- Time Gap (T) -->
     <div class="char-block">
-      <div class="char-block-title">🚗 Follow Gap</div>
+      <div class="char-block-title">⏱ Time Gap (T)</div>
       <div class="char-row">
         <label for="gapMean">μ (mean)</label>
-        <input type="number" id="gapMean" value="14.3" min="1" max="100" step="0.5" />
+        <input type="number" id="gapMean" value="1.5" min="0.3" max="5" step="0.1" />
       </div>
       <div class="char-row">
         <label for="gapSd">σ (spread)</label>
-        <input type="number" id="gapSd" value="4.8" min="0" max="40" step="0.5" />
+        <input type="number" id="gapSd" value="0.4" min="0" max="2" step="0.1" />
       </div>
-      <div class="char-unit">Units: meters</div>
+      <div class="char-unit">Units: seconds &nbsp;|  larger T = more cautious</div>
       <canvas class="bell-canvas" id="bellGap"></canvas>
     </div>
   </div>
@@ -256,10 +256,15 @@
     const M_PER_PX  = CAR_M / 42;             // metres per pixel
     const PX_PER_M  = 42 / CAR_M;             // pixels per metre
     const FPS       = 60;
-    // Convert m/s (user-facing) to px/frame (internal)
+    const DT        = 1 / FPS;                // seconds per frame
+    // Convert m/s to px/frame
     function msToSpd(ms)  { return ms  / (M_PER_PX * FPS); }
-    // Convert metres (user-facing) to pixels (internal)
+    // Convert metres to pixels
     function mToPx(m)     { return m   * PX_PER_M; }
+    // Convert px/frame to m/s
+    function spdToMs(spd) { return spd * M_PER_PX * FPS; }
+    // Convert pixels to metres
+    function pxToM(px)    { return px  * M_PER_PX; }
 
     function resize() {
       canvas.width  = window.innerWidth;
@@ -287,8 +292,6 @@
     function initLayout() {
       W       = canvas.width;
       H       = canvas.height;
-      // Place highway in the upper portion so ramps fit below cleanly.
-      // Use 30% from top rather than exact centre to avoid too much empty space.
       HWY_TOP = Math.max(20, Math.round((H - HWY_H - RAMP_DROP) * 0.30));
       HWY_BOT = HWY_TOP + HWY_H;
 
@@ -316,57 +319,100 @@
     function laneCY(n) { return HWY_TOP + (n - 1) * LANE_H + LANE_H / 2; }
 
     // ── Car dimensions ────────────────────────────────────────────────────────
-    const CAR_W      = 42;
-    const CAR_H      = 22;
-    const FOLLOW_GAP = 12;
+    const CAR_W = 42;
+    const CAR_H = 22;
+
+    // ── IDM parameters (in SI units: m, s, m/s, m/s²) ────────────────────────
+    // These are the fixed per-car parameters that don't come from the UI sliders.
+    // v0 and T come from the driver characteristics panel (normal distribution).
+    const IDM_S0   = 2.0;   // minimum jam gap [m]
+    const IDM_A    = 1.4;   // max acceleration [m/s²]
+    const IDM_B    = 2.5;   // comfortable deceleration [m/s²]
+    const IDM_BMAX = 9.0;   // maximum emergency deceleration [m/s²]
+
+    // ── MOBIL parameters ──────────────────────────────────────────────────────
+    const MOB_B_SAFE    = 4.0;   // safe deceleration threshold [m/s²]
+    const MOB_P         = 0.2;   // politeness factor (0 = selfish)
+    const MOB_B_THR     = 0.2;   // incentive threshold [m/s²] — must gain this much to change
+    const MOB_B_BIAS_R  = 0.1;   // right-lane bias [m/s²] (encourages keeping right)
+    const LC_COOLDOWN   = 90;    // frames between lane changes per car
+
+    // ── IDM acceleration function (operates in SI units) ─────────────────────
+    // s:  gap to leader [m]
+    // v:  own speed [m/s]
+    // vl: leader speed [m/s]
+    // v0: desired speed [m/s]
+    // T:  desired time gap [s]
+    function idmAcc(s, v, vl, v0, T) {
+      const s0   = IDM_S0;
+      const a    = IDM_A;
+      const b    = IDM_B;
+      const bmax = IDM_BMAX;
+
+      const accFree = (v < v0)
+        ? a * (1 - Math.pow(v / v0, 4))
+        : a * (1 - v / v0);
+
+      const sstar = s0 + Math.max(0, v * T + 0.5 * v * (v - vl) / Math.sqrt(a * b));
+      const accInt = -a * Math.pow(sstar / Math.max(s, s0), 2);
+
+      return Math.max(-bmax, accFree + accInt);
+    }
+
+    // Free-road IDM (no leader) — used when there is no car ahead
+    function idmAccFree(v, v0) {
+      const a = IDM_A;
+      return (v < v0)
+        ? a * (1 - Math.pow(v / v0, 4))
+        : a * (1 - v / v0);
+    }
 
     // ── Simulation state ──────────────────────────────────────────────────────
+    // Car schema: { id, type, pos, vel, v0, T, color, lcCooldown }
+    //   type:       'lane1'–'lane4' | 'onramp' | 'offramp'
+    //   pos:        x position in pixels (lane cars) OR progress 0–1 (ramp cars)
+    //   vel:        speed in px/frame (lane cars) OR progress/frame (ramp cars)
+    //   v0:         desired speed in m/s (IDM parameter)
+    //   T:          desired time gap in seconds (IDM parameter)
+    //   lcCooldown: frames remaining before this car can change lanes again
     let cars       = [];
     let crashed    = false;
-    let hasCrashed = false; // latches true permanently once a crash occurs; cleared only on Reset
-    let crashPairs = [];   // pairs at crash frame (for overlay)
+    let hasCrashed = false;
+    let crashPairs = [];
     let nextId     = 0;
 
     // ── DVR / playback state ──────────────────────────────────────────────────
-    // mode: 'live' | 'paused' | 'rewinding' | 'replay'
     let mode          = 'live';
-    const HISTORY_MAX = 1800;          // ~30 s at 60 fps
-    const history     = [];            // ring buffer of snapshots
-    let   histHead    = 0;             // index of oldest entry (circular)
-    let   histLen     = 0;             // number of valid entries
-    let   playHead    = 0;             // current playback position (0 = oldest)
+    const HISTORY_MAX = 1800;
+    const history     = [];
+    let   histHead    = 0;
+    let   histLen     = 0;
+    let   playHead    = 0;
 
-    // Speed multiplier: applies to both live playback (forward) and rewind.
-    // At Nx speed, updateCars() is called N times per render frame (forward)
-    // or history is stepped N frames per render frame (rewind).
     const SPEEDS      = [1, 2, 4];
-    let   speedIdx    = 0;             // index into SPEEDS array
+    let   speedIdx    = 0;
     function speed()  { return SPEEDS[speedIdx]; }
 
-    // Snapshot: deep-copy the cars array (only the fields needed for rendering)
     function snapshot() {
       return cars.map(c => ({ ...c }));
     }
 
-    // Push a snapshot into the ring buffer
     function pushHistory(snap) {
       const idx = (histHead + histLen) % HISTORY_MAX;
       history[idx] = snap;
       if (histLen < HISTORY_MAX) {
         histLen++;
       } else {
-        histHead = (histHead + 1) % HISTORY_MAX; // overwrite oldest
+        histHead = (histHead + 1) % HISTORY_MAX;
       }
-      playHead = histLen - 1; // always point to latest when live
+      playHead = histLen - 1;
     }
 
-    // Retrieve snapshot at logical position pos (0 = oldest, histLen-1 = newest)
     function getSnapshot(pos) {
       const idx = (histHead + pos) % HISTORY_MAX;
       return history[idx] || [];
     }
 
-    // Restore cars array from a snapshot (for scrubbing)
     function restoreSnapshot(pos) {
       const snap = getSnapshot(pos);
       cars.length = 0;
@@ -376,54 +422,40 @@
     // ── Helpers ───────────────────────────────────────────────────────────────
     const COLORS = ['#E74C3C','#E67E22','#9B59B6','#3498DB','#1ABC9C',
                     '#F39C12','#2ECC71','#E91E63','#00BCD4','#CDDC39','#FF5722'];
-    function rndColor() { return COLORS[Math.floor(Math.random() * COLORS.length)]; }
 
     // ── Normal distribution (Box-Muller transform) ────────────────────────────
     function randNormal(mean, sd) {
       if (sd <= 0) return mean;
-      let u, v;
+      let u;
       do { u = Math.random(); } while (u === 0);
-      v = Math.random();
-      const z = Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v);
-      return mean + z * sd;
+      const v = Math.random();
+      return mean + Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v) * sd;
     }
 
-    // Read current values from the driver characteristics inputs
-    // User inputs are in m/s (speed) and metres (gap).
-    // We convert to internal units: px/frame (speed) and px (gap).
+    // Read current driver characteristic params from the UI
+    // Returns v0 in m/s and T in seconds.
     function getCharParams() {
-      const speedMeanMs = parseFloat(document.getElementById('speedMean').value) || 15.7;
-      const speedSdMs   = parseFloat(document.getElementById('speedSd').value)   || 0;
-      const gapMeanM    = parseFloat(document.getElementById('gapMean').value)   || 14.3;
-      const gapSdM      = parseFloat(document.getElementById('gapSd').value)     || 0;
-      return {
-        speedMean : msToSpd(speedMeanMs),
-        speedSd   : msToSpd(speedSdMs),
-        gapMean   : mToPx(gapMeanM),
-        gapSd     : mToPx(gapSdM),
-      };
+      const v0Mean = parseFloat(document.getElementById('speedMean').value) || 28;
+      const v0Sd   = parseFloat(document.getElementById('speedSd').value)   || 0;
+      const TMean  = parseFloat(document.getElementById('gapMean').value)   || 1.5;
+      const TSd    = parseFloat(document.getElementById('gapSd').value)     || 0;
+      return { v0Mean, v0Sd, TMean, TSd };
     }
 
-    // Sample a speed and follow-gap for a new car from the current distributions
     function sampleCharacteristics() {
-      const p = getCharParams();
-      // Clamp speed: 0.5 m/s min (~1.8 km/h), 50 m/s max (~180 km/h)
-      const speed     = Math.max(msToSpd(0.5), Math.min(msToSpd(50), randNormal(p.speedMean, p.speedSd)));
-      // Clamp gap: 1m min, 100m max
-      const followGap = Math.max(mToPx(1),     Math.min(mToPx(100), randNormal(p.gapMean, p.gapSd)));
-      return { speed, followGap };
+      const p  = getCharParams();
+      const v0 = Math.max(5, Math.min(50, randNormal(p.v0Mean, p.v0Sd)));   // m/s, clamped 5–50
+      const T  = Math.max(0.3, Math.min(5,  randNormal(p.TMean,  p.TSd)));  // s, clamped 0.3–5
+      return { v0, T };
     }
 
-    function makeCar(type, pos, speed, color, followGap) {
+    function makeCar(type, pos, vel, color, v0override, Toverride) {
       const id = nextId++;
-      // Color is deterministic: same car ID always gets the same color.
-      // This ensures colors don't change when rewinding and replaying.
       const assignedColor = color || COLORS[id % COLORS.length];
-      // If followGap not provided, sample from distribution
-      const gap = (followGap !== undefined) ? followGap : sampleCharacteristics().followGap;
-      // If speed not provided, sample from distribution
-      const spd = (speed !== undefined) ? speed : sampleCharacteristics().speed;
-      return { id, type, pos, speed: spd, followGap: gap, color: assignedColor };
+      const { v0: sv0, T: sT } = sampleCharacteristics();
+      const v0 = (v0override !== undefined) ? v0override : sv0;
+      const T  = (Toverride  !== undefined) ? Toverride  : sT;
+      return { id, type, pos, vel, v0, T, color: assignedColor, lcCooldown: 0 };
     }
 
     function rampPos(progress, type) {
@@ -468,10 +500,13 @@
         return;
       }
       const blocked = laneCars.some(c => c.pos < CAR_W + 36);
-        if (!blocked) {
-          const { speed, followGap } = sampleCharacteristics();
-          cars.push(makeCar(`lane${n}`, -CAR_W, speed, undefined, followGap));
-        }
+      if (!blocked) {
+        const { v0, T } = sampleCharacteristics();
+        // Spawn at the entry speed: IDM free-road acceleration from rest
+        // Start with a reasonable entry velocity (~v0 * 0.6) so cars don't crawl in
+        const entryVel = msToSpd(v0 * 0.6);
+        cars.push(makeCar(`lane${n}`, -CAR_W, entryVel, undefined, v0, T));
+      }
       spawnTimers[n] = spawnInterval();
     }
 
@@ -479,13 +514,13 @@
       const offsets = [100, 320, 580, 860, 1150];
       for (let n = 1; n <= 4; n++) {
         offsets.forEach(off => {
-          const { speed, followGap } = sampleCharacteristics();
-          cars.push(makeCar(`lane${n}`, -off, speed, undefined, followGap));
+          const { v0, T } = sampleCharacteristics();
+          const vel = msToSpd(v0 * (0.7 + Math.random() * 0.3));
+          cars.push(makeCar(`lane${n}`, -off, vel, undefined, v0, T));
         });
       }
-      // Ramp cars use progress/frame units (not px/frame), so keep as-is
-      cars.push(makeCar('onramp', -0.30, 0.006));
-      cars.push(makeCar('onramp', -0.75, 0.007));
+      cars.push(makeCar('onramp', -0.30, 0.006, undefined, 20, 1.5));
+      cars.push(makeCar('onramp', -0.75, 0.007, undefined, 20, 1.5));
     }
 
     // ── Bounding boxes ────────────────────────────────────────────────────────
@@ -507,90 +542,219 @@
                a.y + a.h <= b.y || b.y + b.h <= a.y);
     }
 
+    // ── IDM update for a single lane car ─────────────────────────────────────
+    // Returns the new acceleration in px/frame² (converted from m/s²)
+    function computeIdmAcc(car, leader) {
+      const v_ms  = spdToMs(car.vel);                    // own speed [m/s]
+      const v0_ms = car.v0;                               // desired speed [m/s]
+      const T     = car.T;                                // time gap [s]
+
+      let acc_ms2;
+      if (leader) {
+        const gap_px = leader.pos - (car.pos + CAR_W);
+        const gap_m  = pxToM(Math.max(0, gap_px));       // gap [m], never negative
+        const vl_ms  = spdToMs(leader.vel);               // leader speed [m/s]
+        acc_ms2 = idmAcc(gap_m, v_ms, vl_ms, v0_ms, T);
+      } else {
+        acc_ms2 = idmAccFree(v_ms, v0_ms);
+      }
+
+      // Convert m/s² back to px/frame²
+      return acc_ms2 / (M_PER_PX * FPS * FPS);
+    }
+
+    // ── MOBIL lane-change check ───────────────────────────────────────────────
+    // Returns the target lane number if a lane change is desired and safe, else null.
+    // Checks both left (n-1) and right (n+1) lanes.
+    function mobileCheckLC(car, laneN, lanes) {
+      if (car.lcCooldown > 0) return null;
+      // Lane 4 is special (ramp merge zone) — no lane changes in the merge/split zone
+      if (laneN === 4) {
+        const inZone = (car.pos + CAR_W > MERGE_ZONE_X1 && car.pos < MERGE_ZONE_X2) ||
+                       (car.pos + CAR_W > SPLIT_ZONE_X1 && car.pos < SPLIT_ZONE_X2);
+        if (inZone) return null;
+      }
+
+      const v_ms  = spdToMs(car.vel);
+      const vrel  = Math.min(1, v_ms / Math.max(1, car.v0));  // v/v0 for speed-dependent bSafe
+
+      // Current leader in own lane
+      const sortedOwn = lanes[laneN];
+      const ownIdx    = sortedOwn.indexOf(car);
+      const ownLeader = sortedOwn[ownIdx - 1] || null;
+
+      // Current acceleration in own lane
+      const accCur = computeIdmAcc(car, ownLeader);
+
+      let bestTarget = null;
+      let bestDacc   = 0;
+
+      for (const toRight of [true, false]) {
+        const targetN = laneN + (toRight ? 1 : -1);
+        if (targetN < 1 || targetN > NUM_LANES) continue;
+
+        const targetLane = lanes[targetN];
+
+        // Find the new leader and new follower in the target lane
+        // (car sorted by pos descending, so leader = car ahead = lower index)
+        let newLeader   = null;
+        let newFollower = null;
+        for (const tc of targetLane) {
+          if (tc.pos > car.pos) {
+            // tc is ahead — take the rearmost one ahead as the new leader
+            if (!newLeader || tc.pos < newLeader.pos) newLeader = tc;
+          } else {
+            // tc is behind — take the frontmost one behind as the new follower
+            if (!newFollower || tc.pos > newFollower.pos) newFollower = tc;
+          }
+        }
+
+        // Prospective own acceleration in target lane
+        const accNew = computeIdmAcc(car, newLeader);
+
+        // Prospective acceleration of the new follower (if it had to follow us)
+        let accLagNew = 0;
+        if (newFollower) {
+          // What would the new follower's acc be if we moved in front of it?
+          const gap_px = car.pos - (newFollower.pos + CAR_W);
+          const gap_m  = pxToM(Math.max(0, gap_px));
+          accLagNew = idmAcc(gap_m, spdToMs(newFollower.vel), spdToMs(car.vel),
+                             newFollower.v0, newFollower.T);
+        }
+
+        // MOBIL safety criterion: would the new follower have to brake harder than bSafe?
+        const bSafeActual = vrel * MOB_B_SAFE + (1 - vrel) * (MOB_B_SAFE * 1.5);
+        if (accLagNew < -bSafeActual) continue;  // unsafe — skip
+
+        // MOBIL incentive criterion
+        const signRight = toRight ? 1 : -1;
+        const dacc = accNew - accCur
+                   + MOB_P * accLagNew
+                   + MOB_B_BIAS_R * signRight
+                   - MOB_B_THR;
+
+        if (dacc > bestDacc) {
+          bestDacc   = dacc;
+          bestTarget = targetN;
+        }
+      }
+
+      return bestTarget;
+    }
+
     // ── Update ────────────────────────────────────────────────────────────────
     function updateCars() {
+      // Build sorted lane arrays (descending by pos = leader first)
       const lanes = {};
       for (let n = 1; n <= 4; n++) {
         lanes[n] = cars.filter(c => c.type === `lane${n}`)
                        .sort((a, b) => b.pos - a.pos);
       }
 
-      for (let n = 1; n <= 4; n++) {
-        lanes[n].forEach((car, i) => {
-          const leader = lanes[n][i - 1];
-          let maxMove  = car.speed;
-
-          if (leader) {
-            const gap = leader.pos - (car.pos + CAR_W) - (car.followGap || FOLLOW_GAP);
-            maxMove = Math.min(maxMove, Math.max(0, gap));
-          }
-
-          if (n === 4) {
-            const inZone = (car.pos + CAR_W > MERGE_ZONE_X1 && car.pos < MERGE_ZONE_X2) ||
-                           (car.pos + CAR_W > SPLIT_ZONE_X1 && car.pos < SPLIT_ZONE_X2);
-            if (inZone) maxMove = Math.max(maxMove, 1);
-          }
-
-          car.pos += maxMove;
-
-          if (n === 4 &&
-              car.pos > SPLIT_X + CAR_W &&
-              car.pos < SPLIT_X + CAR_W + car.speed * 2 &&
-              Math.random() < 0.4) {
-            car.type  = 'offramp';
-            car.pos   = 0;
-            car.speed = 0.008 + Math.random() * 0.003;
-            return;
-          }
-
-          if (car.pos > W + CAR_W) {
-            const idx = cars.indexOf(car);
-            if (idx !== -1) cars.splice(idx, 1);
+      // ── Phase 1: MOBIL lane-change decisions ─────────────────────────────
+      // Collect all lane-change requests first (before moving anyone)
+      const lcRequests = [];
+      for (let n = 1; n <= NUM_LANES; n++) {
+        lanes[n].forEach(car => {
+          // Only cars fully on-screen and not near the edges
+          if (car.pos < 50 || car.pos > W - 100) return;
+          const target = mobileCheckLC(car, n, lanes);
+          if (target !== null) {
+            lcRequests.push({ car, fromLane: n, toLane: target });
           }
         });
       }
 
+      // Apply lane changes (one per car per frame)
+      lcRequests.forEach(({ car, fromLane, toLane }) => {
+        car.type       = `lane${toLane}`;
+        car.lcCooldown = LC_COOLDOWN;
+        // Rebuild the affected lanes immediately so subsequent decisions see the new state
+        lanes[fromLane] = lanes[fromLane].filter(c => c !== car);
+        lanes[toLane]   = [...lanes[toLane], car].sort((a, b) => b.pos - a.pos);
+      });
+
+      // ── Phase 2: IDM longitudinal update ─────────────────────────────────
+      for (let n = 1; n <= NUM_LANES; n++) {
+        lanes[n].forEach((car, i) => {
+          const leader = lanes[n][i - 1] || null;
+          const acc    = computeIdmAcc(car, leader);
+
+          // Ballistic integration (Euler step in px/frame units)
+          // acc is already in px/frame²
+          car.vel = Math.max(0, car.vel + acc);
+          car.pos += car.vel;
+
+          // Tick down lane-change cooldown
+          if (car.lcCooldown > 0) car.lcCooldown--;
+
+          // Remove cars that have exited the right edge
+          if (car.pos > W + CAR_W) {
+            const idx = cars.indexOf(car);
+            if (idx !== -1) cars.splice(idx, 1);
+            return;
+          }
+
+          // Off-ramp peel-off: lane 4 cars past SPLIT_X may exit
+          if (n === 4 &&
+              car.pos > SPLIT_X + CAR_W &&
+              car.pos < SPLIT_X + CAR_W + car.vel * 2 &&
+              Math.random() < 0.4) {
+            car.type  = 'offramp';
+            car.pos   = 0;
+            car.vel   = 0.008 + Math.random() * 0.003;
+            return;
+          }
+        });
+      }
+
+      // ── Phase 3: On-ramp update ───────────────────────────────────────────
       const onrampCars = cars.filter(c => c.type === 'onramp')
                              .sort((a, b) => b.pos - a.pos);
       const rampOnLen  = Math.hypot(RAMP_ON_X1 - RAMP_ON_X0, RAMP_ON_Y1 - RAMP_ON_Y0);
 
       onrampCars.forEach((car, i) => {
-        const leader = onrampCars[i - 1];
-        let maxMove  = car.speed;
+        const leader = onrampCars[i - 1] || null;
+        let maxMove  = car.vel;
 
         if (leader) {
-          const gapProg = (CAR_H + (car.followGap || FOLLOW_GAP)) / rampOnLen;
+          const gapProg = (CAR_H + mToPx(IDM_S0)) / rampOnLen;
           const gap     = leader.pos - car.pos - gapProg;
           if (gap <= 0) return;
           maxMove = Math.min(maxMove, gap);
         }
 
+        // Yield check: stop at 55% up the ramp if lane 4 is blocked
         if (car.pos > 0.55) {
-          const blocked = lanes[4].some(hc => Math.abs(hc.pos - MERGE_X) < MERGE_CLEAR);
+          const blocked = (lanes[4] || []).some(hc => Math.abs(hc.pos - MERGE_X) < MERGE_CLEAR);
           if (blocked) maxMove = 0;
         }
 
         car.pos += maxMove;
 
+        // Merge onto lane 4
         if (car.pos >= 1.0) {
           car.type = 'lane4';
           car.pos  = MERGE_X;
-          // Re-sample highway speed and gap from distribution on merge
+          // Re-sample highway characteristics on merge
           const ch = sampleCharacteristics();
-          car.speed     = ch.speed;
-          car.followGap = ch.followGap;
+          car.v0  = ch.v0;
+          car.T   = ch.T;
+          car.vel = msToSpd(ch.v0 * 0.6);
+          car.lcCooldown = LC_COOLDOWN * 2; // don't immediately change lanes after merging
         }
       });
 
+      // ── Phase 4: Off-ramp update ──────────────────────────────────────────
       const offrampCars = cars.filter(c => c.type === 'offramp')
                               .sort((a, b) => b.pos - a.pos);
       const rampOffLen  = Math.hypot(RAMP_OFF_X1 - RAMP_OFF_X0, RAMP_OFF_Y1 - RAMP_OFF_Y0);
 
       offrampCars.forEach((car, i) => {
-        const leader = offrampCars[i - 1];
-        let maxMove  = car.speed;
+        const leader = offrampCars[i - 1] || null;
+        let maxMove  = car.vel;
         if (leader) {
-          const gapProg = (CAR_H + (car.followGap || FOLLOW_GAP)) / rampOffLen;
+          const gapProg = (CAR_H + mToPx(IDM_S0)) / rampOffLen;
           const gap     = leader.pos - car.pos - gapProg;
           if (gap <= 0) return;
           maxMove = Math.min(maxMove, gap);
@@ -602,6 +766,7 @@
         }
       });
 
+      // ── Phase 5: Spawn ────────────────────────────────────────────────────
       for (let n = 1; n <= 4; n++) trySpawnLane(n);
 
       const onrampMax   = 1 + Math.round((trafficVolume - 1) * (4 / 9));
@@ -612,8 +777,7 @@
           ? Math.min(...onrampCars.map(c => c.pos))
           : 0;
         const newPos = Math.min(rearmost - 0.25, -0.1);
-        const { followGap } = sampleCharacteristics();
-        cars.push(makeCar('onramp', newPos, 0.005 + Math.random() * 0.003, undefined, followGap));
+        cars.push(makeCar('onramp', newPos, 0.005 + Math.random() * 0.003, undefined, 20, 1.5));
       }
     }
 
@@ -634,8 +798,8 @@
       }
       if (crashPairs.length > 0) {
         crashed    = true;
-        hasCrashed = true;  // latch: stays true until Reset
-        mode       = 'paused';   // pause on crash — controls remain active
+        hasCrashed = true;
+        mode       = 'paused';
         updateDvrUI();
       }
     }
@@ -759,13 +923,10 @@
     }
 
     function drawCrashOverlay() {
-      // Only draw the crash overlay if we are at or near the crash frame
-      // (playHead is at the end of history, or we are paused at crash)
       const atCrash = (playHead >= histLen - 2);
       if (!atCrash) return;
 
-      // Draw banner first
-      const bw = 420, bh = 80;
+      const bw = 460, bh = 80;
       const bx = W / 2 - bw / 2, by = H / 2 - bh / 2;
       ctx.fillStyle = 'rgba(192,57,43,0.92)';
       ctx.beginPath();
@@ -780,12 +941,11 @@
       ctx.fillText('Rewind to replay · Reset to start over', W / 2, by + 56);
       ctx.textAlign = 'left';
 
-      // Draw red outlines AFTER the banner so they are always visible on top
       crashPairs.forEach(([a, b]) => {
         [a, b].forEach(car => {
-          const live = cars.find(c => c.id === car.id);
+          const live   = cars.find(c => c.id === car.id);
           const target = live || car;
-          const bb = getBBox(target);
+          const bb     = getBBox(target);
           ctx.strokeStyle = '#FF4444';
           ctx.lineWidth = 4;
           ctx.setLineDash([]);
@@ -798,20 +958,18 @@
     const btnPlay  = document.getElementById('btnPlay');
     const btnReset = document.getElementById('btnReset');
     const btnRew   = document.getElementById('btnRew');
-    const btnFwd   = document.getElementById('btnFwd');
     const scrubBar = document.getElementById('scrubBar');
     const dvrLabel = document.getElementById('dvr-label');
     const statusEl = document.getElementById('status');
+    const btnSpeed = document.getElementById('btnSpeed');
 
     function updateDvrUI() {
-      // Scrub bar range = 0 to histLen-1
       scrubBar.max   = Math.max(0, histLen - 1);
       scrubBar.value = playHead;
 
       const pct = histLen > 1 ? Math.round((playHead / (histLen - 1)) * 100) : 100;
       const spd = speed();
 
-      // Speed button always shows current speed
       btnSpeed.textContent = `Speed: ${spd}×`;
       btnSpeed.classList.toggle('active', spd > 1);
 
@@ -853,17 +1011,13 @@
     }
 
     // ── Button handlers ───────────────────────────────────────────────────────
-
-    // Play/Pause
     btnPlay.addEventListener('click', () => {
       if (mode === 'live' || mode === 'replay') {
         mode = 'paused';
       } else if (mode === 'paused' || mode === 'rewinding') {
         restoreSnapshot(playHead);
         crashed = false;
-        // Do NOT clear crashPairs here — preserve car IDs so red outlines reappear at crash frame.
         if (hasCrashed) {
-          // A crash has occurred this session: replay frozen history, never generate new frames.
           mode = 'replay';
         } else {
           mode = 'live';
@@ -872,7 +1026,6 @@
       updateDvrUI();
     });
 
-    // Reset
     btnReset.addEventListener('click', () => {
       cars.length       = 0;
       history.length    = 0;
@@ -889,25 +1042,20 @@
       updateDvrUI();
     });
 
-    // Rewind: click to toggle on/off
     btnRew.addEventListener('click', () => {
       if (mode === 'rewinding') {
-        mode = 'paused'; // stop rewinding, stay at current frame
+        mode = 'paused';
       } else {
-        mode = 'rewinding'; // start rewinding from current position
+        mode = 'rewinding';
       }
       updateDvrUI();
     });
 
-    // Speed: cycle 1× → 2× → 4× → 1×
-    const btnSpeed = document.getElementById('btnSpeed');
     btnSpeed.addEventListener('click', () => {
       speedIdx = (speedIdx + 1) % SPEEDS.length;
       updateDvrUI();
     });
 
-    // Scrub bar: drag to jump to any recorded frame
-    // On mousedown/touchstart, freeze the max so it doesn't shift while dragging.
     let scrubMax = 0;
     scrubBar.addEventListener('mousedown',  () => { scrubMax = histLen - 1; scrubBar.max = scrubMax; });
     scrubBar.addEventListener('touchstart', () => { scrubMax = histLen - 1; scrubBar.max = scrubMax; });
@@ -916,14 +1064,9 @@
       playHead = v;
       mode     = 'paused';
       restoreSnapshot(playHead);
-      // Clear crash flag so the overlay doesn't show on pre-crash frames.
-      // Do NOT clear crashPairs — car IDs are needed for red outlines when replaying to crash frame.
-      if (playHead < histLen - 2) {
-        crashed = false;
-      }
+      if (playHead < histLen - 2) crashed = false;
       updateDvrUI();
     });
-    // When the user releases the scrub bar, re-sync max to current histLen.
     scrubBar.addEventListener('mouseup',  () => { scrubBar.max = Math.max(0, histLen - 1); updateDvrUI(); });
     scrubBar.addEventListener('touchend', () => { scrubBar.max = Math.max(0, histLen - 1); updateDvrUI(); });
 
@@ -933,13 +1076,10 @@
       const bh = canvasEl.height = canvasEl.offsetHeight || 44;
       const bc = canvasEl.getContext('2d');
       bc.clearRect(0, 0, bw, bh);
-
-      // Background
       bc.fillStyle = '#111120';
       bc.fillRect(0, 0, bw, bh);
 
       if (sd <= 0) {
-        // Spike at mean
         const xMid = bw / 2;
         bc.strokeStyle = color;
         bc.lineWidth = 2;
@@ -950,12 +1090,9 @@
         return;
       }
 
-      // Draw Gaussian PDF over range [mean - 4*sd, mean + 4*sd]
       const lo = mean - 4 * sd;
       const hi = mean + 4 * sd;
       const range = hi - lo;
-
-      // Compute peak PDF value for normalisation
       const peakY = 1 / (sd * Math.sqrt(2 * Math.PI));
 
       bc.strokeStyle = color;
@@ -969,18 +1106,15 @@
       }
       bc.stroke();
 
-      // Fill under curve
       bc.lineTo(bw, bh - 4);
       bc.lineTo(0,  bh - 4);
       bc.closePath();
-      // Parse hex color to rgba for fill
       const r = parseInt(color.slice(1,3),16);
       const g = parseInt(color.slice(3,5),16);
       const b = parseInt(color.slice(5,7),16);
       bc.fillStyle = `rgba(${r},${g},${b},0.15)`;
       bc.fill();
 
-      // Mean line
       const meanPx = ((mean - lo) / range) * bw;
       bc.strokeStyle = 'rgba(255,255,255,0.4)';
       bc.lineWidth = 1;
@@ -993,61 +1127,48 @@
     }
 
     function updateBells() {
-      const speedMeanMs = parseFloat(document.getElementById('speedMean').value) || 15.7;
-      const speedSdMs   = parseFloat(document.getElementById('speedSd').value)   || 0;
-      const gapMeanM    = parseFloat(document.getElementById('gapMean').value)   || 14.3;
-      const gapSdM      = parseFloat(document.getElementById('gapSd').value)     || 0;
-      drawBell(document.getElementById('bellSpeed'), speedMeanMs, speedSdMs, '#3498DB');
-      drawBell(document.getElementById('bellGap'),   gapMeanM,   gapSdM,    '#2ECC71');
+      const v0Mean = parseFloat(document.getElementById('speedMean').value) || 28;
+      const v0Sd   = parseFloat(document.getElementById('speedSd').value)   || 0;
+      const TMean  = parseFloat(document.getElementById('gapMean').value)   || 1.5;
+      const TSd    = parseFloat(document.getElementById('gapSd').value)     || 0;
+      drawBell(document.getElementById('bellSpeed'), v0Mean, v0Sd, '#3498DB');
+      drawBell(document.getElementById('bellGap'),   TMean,  TSd,  '#2ECC71');
     }
 
-    // Wire inputs to bell curve updates
     ['speedMean','speedSd','gapMean','gapSd'].forEach(id => {
       document.getElementById(id).addEventListener('input', updateBells);
     });
-
-    // Draw initial bells after layout is ready
     setTimeout(updateBells, 50);
     window.addEventListener('resize', updateBells);
 
     // ── Main loop ─────────────────────────────────────────────────────────────
     function update() {
       if (mode === 'live') {
-        // Run updateCars() speed() times per frame for the speed multiplier.
-        // Each logical tick is recorded in history.
         const ticks = speed();
         for (let t = 0; t < ticks; t++) {
           pushHistory(snapshot());
           updateCars();
           checkCollisions();
-          if (crashed) break; // stop ticking once a crash is detected
+          if (crashed) break;
         }
         updateDvrUI();
       } else if (mode === 'rewinding') {
-        // Step backward through history at speed() frames per render frame
         const step = speed();
         playHead = Math.max(0, playHead - step);
         restoreSnapshot(playHead);
-        // Clear crash overlay once we've rewound past the crash frame.
-        // Do NOT clear crashPairs — we need the car IDs to draw red outlines when we reach the crash frame again.
-        if (crashed && playHead < histLen - 2) {
-          crashed = false;
-        }
-        if (playHead === 0) mode = 'paused'; // stop at beginning
+        if (crashed && playHead < histLen - 2) crashed = false;
+        if (playHead === 0) mode = 'paused';
         updateDvrUI();
       } else if (mode === 'replay') {
-        // After a crash: step forward through frozen history — never generate new frames.
         const step = speed();
         playHead = Math.min(histLen - 1, playHead + step);
         restoreSnapshot(playHead);
-        // Re-show crash overlay when we reach the crash frame
         if (playHead >= histLen - 2) {
           crashed = true;
           mode    = 'paused';
         }
         updateDvrUI();
       }
-      // mode === 'paused': nothing to update
     }
 
     function render() {
