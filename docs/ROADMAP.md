@@ -32,9 +32,12 @@
 
 ## Phase 5: Variability and complexity (In Progress)
 - [x] Implement normal distribution (Box-Muller transform) for per-car characteristic sampling
-- [x] Per-car **speed** drawn from N(μ, σ) — clamped to [0.5, 6.0] px/frame
-- [x] Per-car **follow gap** drawn from N(μ, σ) — clamped to [2, 120] px
-- [x] User-controllable μ and σ for both characteristics via the Driver Characteristics panel
+- [x] Per-car **desired speed v0** (m/s) drawn from N(μ, σ) — user-controllable via Driver Characteristics panel
+- [x] Per-car **time gap T** (seconds) drawn from N(μ, σ) — replaces the old pixel-based follow gap
+- [x] Bell curve visualizations for each characteristic (live-updating as μ/σ inputs change)
+- [x] **IDM (Intelligent Driver Model)** car-following — smooth acceleration/deceleration based on gap, speed, desired speed v0, and time gap T; ballistic integration
+- [x] **MOBIL lane-changing model** — safety check (new follower must not brake harder than bSafe), incentive check (must gain sufficient acceleration benefit), right-lane bias, per-car cooldown, no lane changes in merge/split zones
+- [x] All distances and speeds displayed in SI units (m, m/s) with CAR_W = 5m as the conversion anchor
 - [ ] Add additional driver archetypes (e.g., aggressive, average, cautious)
 - [ ] Assign driver archetypes characteristics
     - Propensity to switch lanes 
