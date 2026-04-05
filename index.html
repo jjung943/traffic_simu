@@ -117,10 +117,10 @@
 
   <!-- DVR controls -->
   <div id="dvr">
-    <button class="dvr-btn" id="btnReset"  title="Reset simulation">⏮ Reset</button>
-    <button class="dvr-btn" id="btnPlay"   title="Play / Pause">⏸ Pause</button>
-    <button class="dvr-btn" id="btnRew"    title="Hold to rewind">◀◀ Rewind</button>
-    <button class="dvr-btn" id="btnFwd"    title="Hold to fast-forward">Fast-Fwd ▶▶</button>
+    <button class="dvr-btn" id="btnReset" title="Reset simulation">⏮ Reset</button>
+    <button class="dvr-btn" id="btnPlay"  title="Play / Pause">⏸ Pause</button>
+    <button class="dvr-btn" id="btnRew"   title="Click to start/stop rewind">◀◀ Rewind</button>
+    <button class="dvr-btn" id="btnSpeed" title="Cycle playback speed">Speed: 1×</button>
     <input  type="range" id="scrubBar" min="0" max="1799" value="1799" step="1" />
     <span id="dvr-label">Live</span>
   </div>
@@ -201,16 +201,20 @@
     let nextId     = 0;
 
     // ── DVR / playback state ──────────────────────────────────────────────────
-    // mode: 'live' | 'paused' | 'scrubbing'
+    // mode: 'live' | 'paused' | 'rewinding'
     let mode          = 'live';
     const HISTORY_MAX = 1800;          // ~30 s at 60 fps
     const history     = [];            // ring buffer of snapshots
     let   histHead    = 0;             // index of oldest entry (circular)
     let   histLen     = 0;             // number of valid entries
     let   playHead    = 0;             // current playback position (0 = oldest)
-    let   rewinding   = false;
-    let   ffwding     = false;
-    const SCRUB_SPEED = 3;             // frames per animation frame during rewind/fwd
+
+    // Speed multiplier: applies to both live playback (forward) and rewind.
+    // At Nx speed, updateCars() is called N times per render frame (forward)
+    // or history is stepped N frames per render frame (rewind).
+    const SPEEDS      = [1, 2, 4];
+    let   speedIdx    = 0;             // index into SPEEDS array
+    function speed()  { return SPEEDS[speedIdx]; }
 
     // Snapshot: deep-copy the cars array (only the fields needed for rendering)
     function snapshot() {
@@ -626,90 +630,99 @@
       scrubBar.value = playHead;
 
       const pct = histLen > 1 ? Math.round((playHead / (histLen - 1)) * 100) : 100;
+      const spd = speed();
+
+      // Speed button always shows current speed
+      btnSpeed.textContent = `Speed: ${spd}×`;
+      btnSpeed.classList.toggle('active', spd > 1);
 
       if (mode === 'live') {
-        btnPlay.textContent = '⏸ Pause';
+        btnPlay.textContent  = spd > 1 ? `⏸ Pause (▶ ${spd}×)` : '⏸ Pause';
         btnPlay.classList.remove('active');
-        dvrLabel.textContent = 'Live';
-        statusEl.textContent = 'Running…';
+        btnRew.classList.remove('active');
+        dvrLabel.textContent = spd > 1 ? `Live ${spd}×` : 'Live';
+        statusEl.textContent = spd > 1 ? `Running at ${spd}× speed…` : 'Running…';
         statusEl.style.color = '#aaa';
       } else if (mode === 'paused') {
         btnPlay.textContent = '▶ Play';
         btnPlay.classList.add('active');
+        btnRew.classList.remove('active');
         if (crashed && playHead >= histLen - 2) {
           dvrLabel.textContent = 'CRASH';
-          statusEl.textContent = '💥 Crash detected — use rewind to study, or reset to restart.';
+          statusEl.textContent = '💥 Crash detected — rewind to study, or reset to restart.';
           statusEl.style.color = '#E74C3C';
         } else {
           dvrLabel.textContent = `Paused ${pct}%`;
           statusEl.textContent = `Paused at frame ${playHead} of ${histLen - 1}`;
           statusEl.style.color = '#f39c12';
         }
-      } else if (mode === 'scrubbing') {
-        dvrLabel.textContent = rewinding ? `◀◀ ${pct}%` : `▶▶ ${pct}%`;
-        statusEl.textContent = `Scrubbing — frame ${playHead} of ${histLen - 1}`;
+      } else if (mode === 'rewinding') {
+        btnPlay.textContent = '▶ Play';
+        btnPlay.classList.add('active');
+        btnRew.classList.add('active');
+        dvrLabel.textContent = `◀◀ ${pct}%`;
+        statusEl.textContent = `Rewinding at ${spd}× — frame ${playHead} of ${histLen - 1}`;
         statusEl.style.color = '#3498DB';
       }
     }
 
     // ── Button handlers ───────────────────────────────────────────────────────
+
+    // Play/Pause
     btnPlay.addEventListener('click', () => {
       if (mode === 'live') {
         mode = 'paused';
-      } else if (mode === 'paused') {
+      } else if (mode === 'paused' || mode === 'rewinding') {
         if (crashed && playHead >= histLen - 2) {
-          // At crash frame — play does nothing meaningful; user should reset
+          // At crash frame — resuming would re-enter the crash immediately.
+          // User should reset instead.
         } else {
+          restoreSnapshot(playHead); // resume from current scrub position
           mode = 'live';
-          // If user scrubbed back and hits play, we resume from live edge
-          // (we can't replay forward from a past state without re-simulating)
-          playHead = histLen - 1;
         }
-      } else if (mode === 'scrubbing') {
-        mode = 'paused';
       }
       updateDvrUI();
     });
 
+    // Reset
     btnReset.addEventListener('click', () => {
-      // Full reset
-      cars.length    = 0;
-      history.length = 0;
-      histHead       = 0;
-      histLen        = 0;
-      playHead       = 0;
-      crashed        = false;
+      cars.length       = 0;
+      history.length    = 0;
+      histHead          = 0;
+      histLen           = 0;
+      playHead          = 0;
+      crashed           = false;
       crashPairs.length = 0;
-      spawnTimers    = { 1: 0, 2: 30, 3: 60, 4: 90 };
-      mode           = 'live';
-      rewinding      = false;
-      ffwding        = false;
-      btnRew.classList.remove('active');
-      btnFwd.classList.remove('active');
+      spawnTimers       = { 1: 0, 2: 30, 3: 60, 4: 90 };
+      speedIdx          = 0;
+      mode              = 'live';
       seedInitialCars();
       updateDvrUI();
     });
 
-    // Rewind: hold button to play backward
-    btnRew.addEventListener('mousedown',  () => { rewinding = true;  ffwding = false; mode = 'scrubbing'; btnRew.classList.add('active');    btnFwd.classList.remove('active'); updateDvrUI(); });
-    btnRew.addEventListener('touchstart', () => { rewinding = true;  ffwding = false; mode = 'scrubbing'; btnRew.classList.add('active');    btnFwd.classList.remove('active'); updateDvrUI(); });
-    btnRew.addEventListener('mouseup',    () => { rewinding = false; mode = 'paused'; btnRew.classList.remove('active'); updateDvrUI(); });
-    btnRew.addEventListener('mouseleave', () => { if (rewinding) { rewinding = false; mode = 'paused'; btnRew.classList.remove('active'); updateDvrUI(); } });
-    btnRew.addEventListener('touchend',   () => { rewinding = false; mode = 'paused'; btnRew.classList.remove('active'); updateDvrUI(); });
+    // Rewind: click to toggle on/off
+    btnRew.addEventListener('click', () => {
+      if (mode === 'rewinding') {
+        mode = 'paused'; // stop rewinding, stay at current frame
+      } else {
+        mode = 'rewinding'; // start rewinding from current position
+      }
+      updateDvrUI();
+    });
 
-    // Fast-forward: hold button to play forward through history
-    btnFwd.addEventListener('mousedown',  () => { ffwding = true;  rewinding = false; mode = 'scrubbing'; btnFwd.classList.add('active');    btnRew.classList.remove('active'); updateDvrUI(); });
-    btnFwd.addEventListener('touchstart', () => { ffwding = true;  rewinding = false; mode = 'scrubbing'; btnFwd.classList.add('active');    btnRew.classList.remove('active'); updateDvrUI(); });
-    btnFwd.addEventListener('mouseup',    () => { ffwding = false; if (playHead >= histLen - 1) { mode = 'live'; } else { mode = 'paused'; } btnFwd.classList.remove('active'); updateDvrUI(); });
-    btnFwd.addEventListener('mouseleave', () => { if (ffwding) { ffwding = false; if (playHead >= histLen - 1) { mode = 'live'; } else { mode = 'paused'; } btnFwd.classList.remove('active'); updateDvrUI(); } });
-    btnFwd.addEventListener('touchend',   () => { ffwding = false; if (playHead >= histLen - 1) { mode = 'live'; } else { mode = 'paused'; } btnFwd.classList.remove('active'); updateDvrUI(); });
+    // Speed: cycle 1× → 2× → 4× → 1×
+    const btnSpeed = document.getElementById('btnSpeed');
+    btnSpeed.addEventListener('click', () => {
+      speedIdx = (speedIdx + 1) % SPEEDS.length;
+      updateDvrUI();
+    });
 
-    // Scrub bar: drag to jump to any frame
+    // Scrub bar: drag to jump to any recorded frame
     scrubBar.addEventListener('input', () => {
       const v = parseInt(scrubBar.value, 10);
       if (v < histLen) {
         playHead = v;
-        mode = 'paused';
+        mode     = 'paused';
         restoreSnapshot(playHead);
         updateDvrUI();
       }
@@ -718,31 +731,25 @@
     // ── Main loop ─────────────────────────────────────────────────────────────
     function update() {
       if (mode === 'live') {
-        // Record state before advancing
-        pushHistory(snapshot());
-        updateCars();
-        checkCollisions();
-        updateDvrUI();
-      } else if (mode === 'scrubbing') {
-        if (rewinding) {
-          playHead = Math.max(0, playHead - SCRUB_SPEED);
-          restoreSnapshot(playHead);
-          updateDvrUI();
-        } else if (ffwding) {
-          if (playHead < histLen - 1) {
-            playHead = Math.min(histLen - 1, playHead + SCRUB_SPEED);
-            restoreSnapshot(playHead);
-            updateDvrUI();
-          } else {
-            // Reached live edge — resume live simulation
-            mode    = 'live';
-            ffwding = false;
-            btnFwd.classList.remove('active');
-            updateDvrUI();
-          }
+        // Run updateCars() speed() times per frame for the speed multiplier.
+        // Each logical tick is recorded in history.
+        const ticks = speed();
+        for (let t = 0; t < ticks; t++) {
+          pushHistory(snapshot());
+          updateCars();
+          checkCollisions();
+          if (crashed) break; // stop ticking once a crash is detected
         }
+        updateDvrUI();
+      } else if (mode === 'rewinding') {
+        // Step backward through history at speed() frames per render frame
+        const step = speed();
+        playHead = Math.max(0, playHead - step);
+        restoreSnapshot(playHead);
+        if (playHead === 0) mode = 'paused'; // stop at beginning
+        updateDvrUI();
       }
-      // mode === 'paused': do nothing, keep current frame
+      // mode === 'paused': nothing to update
     }
 
     function render() {
