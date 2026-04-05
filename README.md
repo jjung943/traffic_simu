@@ -8,7 +8,12 @@ A project to create a web-based app that models automobile traffic patterns base
 Undecided / TBD
 
 ## Current status
-Phase 3 complete: multiple cars, 4-way intersection, traffic lights, and stop/go behavior.
+Highway layout with on/off ramp, collision detection, and physical rules implemented.
+
+## Physical rules
+- Cars cannot overlap; any contact triggers a crash and halts the simulation
+- Cars may not stop inside the merge/split zone — they must commit or stop before it
+- On-ramp cars yield until a gap is available in the highway lane
 
 ## Next steps
 1. Add start/pause/reset controls (Phase 4)
