@@ -93,42 +93,82 @@
       text-align: left;
     }
 
-    /* ── Driver characteristics panel ── */
-    #char-panel {
+    /* ── Side panel (driver characteristics) ── */
+    #side-panel {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 210px;
+      height: 100%;
+      background: rgba(14, 14, 28, 0.92);
+      border-right: 1px solid #2a2a3a;
+      padding: 10px 10px;
       display: flex;
-      align-items: center;
-      justify-content: center;
-      flex-wrap: wrap;
-      gap: 10px 20px;
-      padding: 4px 12px;
-      font-size: 0.78rem;
-      color: #bbb;
-      background: rgba(255,255,255,0.03);
-      border-top: 1px solid #2a2a3a;
+      flex-direction: column;
+      gap: 14px;
+      z-index: 10;
+      overflow-y: auto;
     }
-    #char-panel .char-group {
+    #side-panel h2 {
+      font-size: 0.8rem;
+      color: #aaa;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      border-bottom: 1px solid #2a2a3a;
+      padding-bottom: 6px;
+      margin-bottom: 2px;
+    }
+    .char-block {
       display: flex;
-      align-items: center;
+      flex-direction: column;
       gap: 6px;
     }
-    #char-panel label { white-space: nowrap; color: #aaa; }
-    #char-panel input[type=number] {
-      width: 58px;
+    .char-block-title {
+      font-size: 0.78rem;
+      color: #3498DB;
+      font-weight: bold;
+      margin-bottom: 2px;
+    }
+    .char-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 6px;
+      font-size: 0.75rem;
+      color: #bbb;
+    }
+    .char-row label { white-space: nowrap; min-width: 60px; }
+    .char-row input[type=number] {
+      width: 68px;
       background: #1e1e30;
       border: 1px solid #444;
       color: #eee;
       border-radius: 4px;
       padding: 2px 5px;
-      font-size: 0.78rem;
-      text-align: center;
+      font-size: 0.75rem;
+      text-align: right;
     }
-    #char-panel .char-title {
-      font-size: 0.72rem;
-      color: #666;
-      font-style: italic;
-      margin-right: 4px;
+    .bell-canvas {
+      display: block;
+      width: 100%;
+      height: 44px;
+      border-radius: 4px;
+      background: #111120;
+      margin-top: 2px;
+    }
+    .char-unit {
+      font-size: 0.68rem;
+      color: #555;
+      margin-top: -2px;
     }
 
+    /* Push main content right of the fixed side panel */
+    #main-content {
+      margin-left: 210px;
+      display: flex;
+      flex-direction: column;
+      height: 100%;
+    }
     canvas { display: block; width: 100%; }
     #status {
       text-align: center;
@@ -140,6 +180,7 @@
   </style>
 </head>
 <body>
+  <div id="main-content">
   <div id="header">
     <h1>Traffic Simulation — 4-Lane Highway</h1>
     <p>One-way (→) · 4 lanes · On/off ramp (lane 4) · Realism-first physics</p>
@@ -161,29 +202,45 @@
     <span id="dvr-label">Live</span>
   </div>
 
-  <!-- Driver characteristics panel -->
-  <div id="char-panel">
-    <span class="char-title">Driver Characteristics (applied to new cars):</span>
-    <div class="char-group">
-      <label>Speed μ (px/fr)</label>
-      <input type="number" id="speedMean" value="2.2" min="0.5" max="6" step="0.1" />
+  <!-- Side panel: driver characteristics -->
+  <div id="side-panel">
+    <h2>Driver Characteristics</h2>
+    <p style="font-size:0.68rem;color:#555;margin-top:-8px;">Applied to new cars. Existing cars keep their assigned values.</p>
+
+    <!-- Speed -->
+    <div class="char-block">
+      <div class="char-block-title">💨 Speed</div>
+      <div class="char-row">
+        <label for="speedMean">μ (mean)</label>
+        <input type="number" id="speedMean" value="15.7" min="1" max="50" step="0.5" />
+      </div>
+      <div class="char-row">
+        <label for="speedSd">σ (spread)</label>
+        <input type="number" id="speedSd" value="2.9" min="0" max="20" step="0.5" />
+      </div>
+      <div class="char-unit">Units: m/s &nbsp;|  μ=15.7 ≈ 56 km/h</div>
+      <canvas class="bell-canvas" id="bellSpeed"></canvas>
     </div>
-    <div class="char-group">
-      <label>Speed σ</label>
-      <input type="number" id="speedSd" value="0.4" min="0" max="3" step="0.05" />
-    </div>
-    <div class="char-group">
-      <label>Follow gap μ (px)</label>
-      <input type="number" id="gapMean" value="18" min="2" max="120" step="1" />
-    </div>
-    <div class="char-group">
-      <label>Follow gap σ</label>
-      <input type="number" id="gapSd" value="8" min="0" max="60" step="1" />
+
+    <!-- Follow gap -->
+    <div class="char-block">
+      <div class="char-block-title">🚗 Follow Gap</div>
+      <div class="char-row">
+        <label for="gapMean">μ (mean)</label>
+        <input type="number" id="gapMean" value="14.3" min="1" max="100" step="0.5" />
+      </div>
+      <div class="char-row">
+        <label for="gapSd">σ (spread)</label>
+        <input type="number" id="gapSd" value="4.8" min="0" max="40" step="0.5" />
+      </div>
+      <div class="char-unit">Units: meters</div>
+      <canvas class="bell-canvas" id="bellGap"></canvas>
     </div>
   </div>
 
   <canvas id="sim"></canvas>
   <div id="status">Running…</div>
+  </div><!-- /main-content -->
 
   <script>
   (() => {
@@ -192,15 +249,23 @@
     const ctx      = canvas.getContext('2d');
     const headerEl  = document.getElementById('header');
     const dvrEl     = document.getElementById('dvr');
-    const charPanel = document.getElementById('char-panel');
     const STATUS_H  = 24;
+
+    // ── Unit conversion: CAR_W = 42px = 5m, 60fps ────────────────────────────
+    const CAR_M     = 5;                       // car length in metres
+    const M_PER_PX  = CAR_M / 42;             // metres per pixel
+    const PX_PER_M  = 42 / CAR_M;             // pixels per metre
+    const FPS       = 60;
+    // Convert m/s (user-facing) to px/frame (internal)
+    function msToSpd(ms)  { return ms  / (M_PER_PX * FPS); }
+    // Convert metres (user-facing) to pixels (internal)
+    function mToPx(m)     { return m   * PX_PER_M; }
 
     function resize() {
       canvas.width  = window.innerWidth;
       canvas.height = window.innerHeight
                       - headerEl.offsetHeight
                       - dvrEl.offsetHeight
-                      - charPanel.offsetHeight
                       - STATUS_H;
     }
     resize();
@@ -222,7 +287,9 @@
     function initLayout() {
       W       = canvas.width;
       H       = canvas.height;
-      HWY_TOP = Math.round((H - HWY_H - RAMP_DROP) / 2);
+      // Place highway in the upper portion so ramps fit below cleanly.
+      // Use 30% from top rather than exact centre to avoid too much empty space.
+      HWY_TOP = Math.max(20, Math.round((H - HWY_H - RAMP_DROP) * 0.30));
       HWY_BOT = HWY_TOP + HWY_H;
 
       MERGE_X = Math.round(W * 0.25);
@@ -322,20 +389,28 @@
     }
 
     // Read current values from the driver characteristics inputs
+    // User inputs are in m/s (speed) and metres (gap).
+    // We convert to internal units: px/frame (speed) and px (gap).
     function getCharParams() {
+      const speedMeanMs = parseFloat(document.getElementById('speedMean').value) || 15.7;
+      const speedSdMs   = parseFloat(document.getElementById('speedSd').value)   || 0;
+      const gapMeanM    = parseFloat(document.getElementById('gapMean').value)   || 14.3;
+      const gapSdM      = parseFloat(document.getElementById('gapSd').value)     || 0;
       return {
-        speedMean : parseFloat(document.getElementById('speedMean').value) || 2.2,
-        speedSd   : parseFloat(document.getElementById('speedSd').value)   || 0,
-        gapMean   : parseFloat(document.getElementById('gapMean').value)   || 18,
-        gapSd     : parseFloat(document.getElementById('gapSd').value)     || 0,
+        speedMean : msToSpd(speedMeanMs),
+        speedSd   : msToSpd(speedSdMs),
+        gapMean   : mToPx(gapMeanM),
+        gapSd     : mToPx(gapSdM),
       };
     }
 
     // Sample a speed and follow-gap for a new car from the current distributions
     function sampleCharacteristics() {
       const p = getCharParams();
-      const speed     = Math.max(0.5, Math.min(6.0, randNormal(p.speedMean, p.speedSd)));
-      const followGap = Math.max(2,   Math.min(120,  randNormal(p.gapMean,  p.gapSd)));
+      // Clamp speed: 0.5 m/s min (~1.8 km/h), 50 m/s max (~180 km/h)
+      const speed     = Math.max(msToSpd(0.5), Math.min(msToSpd(50), randNormal(p.speedMean, p.speedSd)));
+      // Clamp gap: 1m min, 100m max
+      const followGap = Math.max(mToPx(1),     Math.min(mToPx(100), randNormal(p.gapMean, p.gapSd)));
       return { speed, followGap };
     }
 
@@ -408,6 +483,7 @@
           cars.push(makeCar(`lane${n}`, -off, speed, undefined, followGap));
         });
       }
+      // Ramp cars use progress/frame units (not px/frame), so keep as-is
       cars.push(makeCar('onramp', -0.30, 0.006));
       cars.push(makeCar('onramp', -0.75, 0.007));
     }
@@ -499,10 +575,10 @@
         if (car.pos >= 1.0) {
           car.type = 'lane4';
           car.pos  = MERGE_X;
-          // Re-sample highway speed from distribution on merge
-          const { speed, followGap } = sampleCharacteristics();
-          car.speed     = speed;
-          car.followGap = followGap;
+          // Re-sample highway speed and gap from distribution on merge
+          const ch = sampleCharacteristics();
+          car.speed     = ch.speed;
+          car.followGap = ch.followGap;
         }
       });
 
@@ -850,6 +926,89 @@
     // When the user releases the scrub bar, re-sync max to current histLen.
     scrubBar.addEventListener('mouseup',  () => { scrubBar.max = Math.max(0, histLen - 1); updateDvrUI(); });
     scrubBar.addEventListener('touchend', () => { scrubBar.max = Math.max(0, histLen - 1); updateDvrUI(); });
+
+    // ── Bell curve visualizations ──────────────────────────────────────────────
+    function drawBell(canvasEl, mean, sd, color) {
+      const bw = canvasEl.width  = canvasEl.offsetWidth  || 190;
+      const bh = canvasEl.height = canvasEl.offsetHeight || 44;
+      const bc = canvasEl.getContext('2d');
+      bc.clearRect(0, 0, bw, bh);
+
+      // Background
+      bc.fillStyle = '#111120';
+      bc.fillRect(0, 0, bw, bh);
+
+      if (sd <= 0) {
+        // Spike at mean
+        const xMid = bw / 2;
+        bc.strokeStyle = color;
+        bc.lineWidth = 2;
+        bc.beginPath();
+        bc.moveTo(xMid, bh - 4);
+        bc.lineTo(xMid, 4);
+        bc.stroke();
+        return;
+      }
+
+      // Draw Gaussian PDF over range [mean - 4*sd, mean + 4*sd]
+      const lo = mean - 4 * sd;
+      const hi = mean + 4 * sd;
+      const range = hi - lo;
+
+      // Compute peak PDF value for normalisation
+      const peakY = 1 / (sd * Math.sqrt(2 * Math.PI));
+
+      bc.strokeStyle = color;
+      bc.lineWidth = 2;
+      bc.beginPath();
+      for (let px = 0; px <= bw; px++) {
+        const v   = lo + (px / bw) * range;
+        const pdf = Math.exp(-0.5 * ((v - mean) / sd) ** 2) / (sd * Math.sqrt(2 * Math.PI));
+        const py  = bh - 4 - (pdf / peakY) * (bh - 10);
+        if (px === 0) bc.moveTo(px, py); else bc.lineTo(px, py);
+      }
+      bc.stroke();
+
+      // Fill under curve
+      bc.lineTo(bw, bh - 4);
+      bc.lineTo(0,  bh - 4);
+      bc.closePath();
+      // Parse hex color to rgba for fill
+      const r = parseInt(color.slice(1,3),16);
+      const g = parseInt(color.slice(3,5),16);
+      const b = parseInt(color.slice(5,7),16);
+      bc.fillStyle = `rgba(${r},${g},${b},0.15)`;
+      bc.fill();
+
+      // Mean line
+      const meanPx = ((mean - lo) / range) * bw;
+      bc.strokeStyle = 'rgba(255,255,255,0.4)';
+      bc.lineWidth = 1;
+      bc.setLineDash([3, 3]);
+      bc.beginPath();
+      bc.moveTo(meanPx, 4);
+      bc.lineTo(meanPx, bh - 4);
+      bc.stroke();
+      bc.setLineDash([]);
+    }
+
+    function updateBells() {
+      const speedMeanMs = parseFloat(document.getElementById('speedMean').value) || 15.7;
+      const speedSdMs   = parseFloat(document.getElementById('speedSd').value)   || 0;
+      const gapMeanM    = parseFloat(document.getElementById('gapMean').value)   || 14.3;
+      const gapSdM      = parseFloat(document.getElementById('gapSd').value)     || 0;
+      drawBell(document.getElementById('bellSpeed'), speedMeanMs, speedSdMs, '#3498DB');
+      drawBell(document.getElementById('bellGap'),   gapMeanM,   gapSdM,    '#2ECC71');
+    }
+
+    // Wire inputs to bell curve updates
+    ['speedMean','speedSd','gapMean','gapSd'].forEach(id => {
+      document.getElementById(id).addEventListener('input', updateBells);
+    });
+
+    // Draw initial bells after layout is ready
+    setTimeout(updateBells, 50);
+    window.addEventListener('resize', updateBells);
 
     // ── Main loop ─────────────────────────────────────────────────────────────
     function update() {
