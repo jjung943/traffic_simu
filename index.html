@@ -201,14 +201,31 @@
       }
 
       // --- On-ramp ---
-      cars.filter(c => c.type === 'onramp').forEach(car => {
+      // Sort by progress descending so the car closest to the merge point is first
+      const onrampCars = cars.filter(c => c.type === 'onramp')
+                             .sort((a, b) => b.pos - a.pos);
+
+      onrampCars.forEach((car, i) => {
+        const leader = onrampCars[i - 1]; // car ahead on the ramp
+        let maxMove  = car.speed;
+
+        // Leader-following on the ramp: keep a gap behind the car ahead
+        if (leader) {
+          // Gap in progress units — convert CAR size to progress scale
+          // Ramp length in pixels ≈ sqrt((X1-X0)²+(Y1-Y0)²)
+          const rampLen = Math.hypot(RAMP_ON_X1 - RAMP_ON_X0, RAMP_ON_Y1 - RAMP_ON_Y0);
+          const gapProg = (CAR_H + FOLLOW_GAP) / rampLen;
+          const gap     = leader.pos - car.pos - gapProg;
+          maxMove = Math.min(maxMove, Math.max(0, gap * car.speed / gapProg));
+        }
+
         // Yield when close to merge point — wait for a gap in lane 4
         if (car.pos > 0.72) {
           const blocked = lanes[4].some(hc => Math.abs(hc.pos - MERGE_X) < MERGE_CLEAR);
           if (blocked) return;
         }
 
-        car.pos += car.speed;
+        car.pos += maxMove;
 
         if (car.pos >= 1.0) {
           // Merge into lane 4
@@ -220,8 +237,23 @@
       });
 
       // --- Off-ramp ---
-      cars.filter(c => c.type === 'offramp').forEach(car => {
-        car.pos += car.speed;
+      // Sort by progress descending so the car furthest along the ramp is first
+      const offrampCars = cars.filter(c => c.type === 'offramp')
+                              .sort((a, b) => b.pos - a.pos);
+
+      offrampCars.forEach((car, i) => {
+        const leader = offrampCars[i - 1];
+        let maxMove  = car.speed;
+
+        if (leader) {
+          const rampLen = Math.hypot(RAMP_OFF_X1 - RAMP_OFF_X0, RAMP_OFF_Y1 - RAMP_OFF_Y0);
+          const gapProg = (CAR_H + FOLLOW_GAP) / rampLen;
+          const gap     = leader.pos - car.pos - gapProg;
+          maxMove = Math.min(maxMove, Math.max(0, gap * car.speed / gapProg));
+        }
+
+        car.pos += maxMove;
+
         if (car.pos > 1.1) {
           // Recycle as a new on-ramp car
           car.type  = 'onramp';
