@@ -592,19 +592,7 @@
       const atCrash = (playHead >= histLen - 2);
       if (!atCrash) return;
 
-      crashPairs.forEach(([a, b]) => {
-        [a, b].forEach(car => {
-          // Find the car in the current cars array by id
-          const live = cars.find(c => c.id === car.id);
-          const target = live || car;
-          const bb = getBBox(target);
-          ctx.strokeStyle = '#FF4444';
-          ctx.lineWidth = 3;
-          ctx.setLineDash([]);
-          ctx.strokeRect(bb.x - 5, bb.y - 5, bb.w + 10, bb.h + 10);
-        });
-      });
-
+      // Draw banner first
       const bw = 420, bh = 80;
       const bx = W / 2 - bw / 2, by = H / 2 - bh / 2;
       ctx.fillStyle = 'rgba(192,57,43,0.92)';
@@ -619,6 +607,19 @@
       ctx.fillStyle = '#fdd';
       ctx.fillText('Rewind to replay · Reset to start over', W / 2, by + 56);
       ctx.textAlign = 'left';
+
+      // Draw red outlines AFTER the banner so they are always visible on top
+      crashPairs.forEach(([a, b]) => {
+        [a, b].forEach(car => {
+          const live = cars.find(c => c.id === car.id);
+          const target = live || car;
+          const bb = getBBox(target);
+          ctx.strokeStyle = '#FF4444';
+          ctx.lineWidth = 4;
+          ctx.setLineDash([]);
+          ctx.strokeRect(bb.x - 6, bb.y - 6, bb.w + 12, bb.h + 12);
+        });
+      });
     }
 
     // ── DVR UI helpers ────────────────────────────────────────────────────────
@@ -687,8 +688,8 @@
         mode = 'paused';
       } else if (mode === 'paused' || mode === 'rewinding') {
         restoreSnapshot(playHead);
-        crashed           = false;
-        crashPairs.length = 0;
+        crashed = false;
+        // Do NOT clear crashPairs here — preserve car IDs so red outlines reappear at crash frame.
         if (hasCrashed) {
           // A crash has occurred this session: replay frozen history, never generate new frames.
           mode = 'replay';
@@ -743,11 +744,10 @@
       playHead = v;
       mode     = 'paused';
       restoreSnapshot(playHead);
-      // Clear crash state so the overlay doesn't show on pre-crash frames.
-      // If user scrubs to the crash frame, the overlay will re-appear via drawCrashOverlay.
+      // Clear crash flag so the overlay doesn't show on pre-crash frames.
+      // Do NOT clear crashPairs — car IDs are needed for red outlines when replaying to crash frame.
       if (playHead < histLen - 2) {
-        crashed           = false;
-        crashPairs.length = 0;
+        crashed = false;
       }
       updateDvrUI();
     });
@@ -773,10 +773,10 @@
         const step = speed();
         playHead = Math.max(0, playHead - step);
         restoreSnapshot(playHead);
-        // Clear crash overlay once we've rewound past the crash frame
+        // Clear crash overlay once we've rewound past the crash frame.
+        // Do NOT clear crashPairs — we need the car IDs to draw red outlines when we reach the crash frame again.
         if (crashed && playHead < histLen - 2) {
-          crashed           = false;
-          crashPairs.length = 0;
+          crashed = false;
         }
         if (playHead === 0) mode = 'paused'; // stop at beginning
         updateDvrUI();
