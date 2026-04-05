@@ -280,7 +280,7 @@
     const NUM_LANES = 4;
     const LANE_H    = 38;
     const HWY_H     = NUM_LANES * LANE_H;
-    const RAMP_DROP = 100;
+    const RAMP_DROP = 300;  // ramp visual drop in pixels (longer ramp for queuing)
 
     let W, H, HWY_TOP, HWY_BOT;
     let MERGE_X, SPLIT_X;
@@ -295,25 +295,30 @@
       HWY_TOP = Math.max(20, Math.round((H - HWY_H - RAMP_DROP) * 0.30));
       HWY_BOT = HWY_TOP + HWY_H;
 
-      MERGE_X = Math.round(W * 0.25);
-      SPLIT_X = Math.round(W * 0.75);
+      MERGE_X = Math.round(W * 0.40);
+      SPLIT_X = Math.round(W * 0.60);
 
-      RAMP_ON_X0  = MERGE_X - RAMP_DROP;
+      // On-ramp: starts near left edge, ends at MERGE_X on lane 4
+      // Horizontal run spans from ~5% of W to MERGE_X (25% of W) = 20% of W
+      // This keeps the ramp fully visible on screen at all sizes
+      RAMP_ON_X0  = Math.round(W * 0.04);
       RAMP_ON_Y0  = HWY_BOT + RAMP_DROP;
       RAMP_ON_X1  = MERGE_X;
       RAMP_ON_Y1  = laneCY(4);
 
+      // Off-ramp: starts at SPLIT_X on lane 4, ends near right edge
       RAMP_OFF_X0 = SPLIT_X;
       RAMP_OFF_Y0 = laneCY(4);
-      RAMP_OFF_X1 = SPLIT_X + RAMP_DROP;
+      RAMP_OFF_X1 = Math.round(W * 0.96);
       RAMP_OFF_Y1 = HWY_BOT + RAMP_DROP;
 
-      MERGE_ZONE_X1 = MERGE_X - 60;
-      MERGE_ZONE_X2 = MERGE_X + 60;
-      SPLIT_ZONE_X1 = SPLIT_X - 60;
-      SPLIT_ZONE_X2 = SPLIT_X + 60;
+      MERGE_ZONE_X1 = MERGE_X - 80;
+      MERGE_ZONE_X2 = MERGE_X + 80;
+      SPLIT_ZONE_X1 = SPLIT_X - 80;
+      SPLIT_ZONE_X2 = SPLIT_X + 80;
 
-      MERGE_CLEAR = CAR_W + 120;
+      // MERGE_CLEAR is now only used for the debug overlay lines
+      MERGE_CLEAR = CAR_W + 80;
     }
 
     function laneCY(n) { return HWY_TOP + (n - 1) * LANE_H + LANE_H / 2; }
@@ -328,7 +333,7 @@
     const IDM_S0   = 2.0;   // minimum jam gap [m]
     const IDM_A    = 1.4;   // max acceleration [m/s²]
     const IDM_B    = 2.5;   // comfortable deceleration [m/s²]
-    const IDM_BMAX = 9.0;   // maximum emergency deceleration [m/s²]
+    const IDM_BMAX = 15.0;  // maximum emergency deceleration [m/s²] — 1.5g, plausible for hard braking
 
     // ── MOBIL parameters ──────────────────────────────────────────────────────
     const MOB_B_SAFE    = 4.0;   // safe deceleration threshold [m/s²]
@@ -379,6 +384,7 @@
     let crashed    = false;
     let hasCrashed = false;
     let crashPairs = [];
+    window._crashPairs = crashPairs;  // expose for debugging
     let nextId     = 0;
 
     // ── DVR / playback state ──────────────────────────────────────────────────
@@ -519,8 +525,8 @@
           cars.push(makeCar(`lane${n}`, -off, vel, undefined, v0, T));
         });
       }
-      cars.push(makeCar('onramp', -0.30, 0.006, undefined, 20, 1.5));
-      cars.push(makeCar('onramp', -0.75, 0.007, undefined, 20, 1.5));
+      cars.push(makeCar('onramp', -0.30, 0.004));
+      cars.push(makeCar('onramp', -0.75, 0.003));
     }
 
     // ── Bounding boxes ────────────────────────────────────────────────────────
@@ -665,8 +671,22 @@
         });
       }
 
-      // Apply lane changes (one per car per frame)
+      // Apply lane changes — check for conflicts before each change.
+      // Because requests were collected with the original lane state, two cars
+      // from different lanes may both have been granted a gap in the same target
+      // lane at the same position.  Re-validate the gap against the current
+      // (already-updated) lanes array before committing each change.
       lcRequests.forEach(({ car, fromLane, toLane }) => {
+        // Re-check: is there still a safe gap in the target lane?
+        const targetNow = lanes[toLane];
+        let wouldOverlap = false;
+        for (const tc of targetNow) {
+          if (tc === car) continue;
+          const gap = Math.abs(tc.pos - car.pos);
+          if (gap < CAR_W + mToPx(IDM_S0)) { wouldOverlap = true; break; }
+        }
+        if (wouldOverlap) return;  // gap no longer safe — skip this change
+
         car.type       = `lane${toLane}`;
         car.lcCooldown = LC_COOLDOWN;
         // Rebuild the affected lanes immediately so subsequent decisions see the new state
@@ -680,10 +700,26 @@
           const leader = lanes[n][i - 1] || null;
           const acc    = computeIdmAcc(car, leader);
 
-          // Ballistic integration (Euler step in px/frame units)
-          // acc is already in px/frame²
-          car.vel = Math.max(0, car.vel + acc);
-          car.pos += car.vel;
+          // Ballistic (constant-acceleration) integration.
+          // pos update uses the average of old and new velocity so that
+          // the position change is consistent with the applied acceleration.
+          // This prevents the gap from going negative when braking hard.
+          const velNew = Math.max(0, car.vel + acc);
+          car.pos += 0.5 * (car.vel + velNew);  // ballistic: avg velocity
+          car.vel  = velNew;
+
+          // Post-update gap enforcement: if this car has overlapped its leader
+          // (which can happen when the closing speed exceeds what BMAX can handle
+          // in a single frame), push the follower back to maintain minimum gap.
+          // This is a numerical safeguard, not a physics override — the IDM
+          // already applied maximum braking; we just prevent the overlap artifact.
+          if (leader) {
+            const minGap = CAR_W + mToPx(IDM_S0 * 0.5);  // 0.5*s0 = 1m hard floor
+            if (car.pos + minGap > leader.pos) {
+              car.pos = leader.pos - minGap;
+              car.vel = Math.min(car.vel, leader.vel);  // match leader speed
+            }
+          }
 
           // Tick down lane-change cooldown
           if (car.lcCooldown > 0) car.lcCooldown--;
@@ -709,39 +745,158 @@
       }
 
       // ── Phase 3: On-ramp update ───────────────────────────────────────────
+      // Ramp cars use progress [0,1] where 1.0 = merge point (MERGE_X, laneCY(4)).
+      // Physics:
+      //   - IDM car-following against the ramp car ahead (same ramp queue)
+      //   - At the merge point, IDM gap-acceptance against lane-4 traffic:
+      //       * upstream (behind merge): gap_front = leader.pos - MERGE_X - CAR_W
+      //       * downstream (ahead of merge): gap_rear  = MERGE_X - follower.pos - CAR_W
+      //     A merge is safe if BOTH gaps satisfy the IDM safety criterion:
+      //       gap_front >= s0 + v*T  (ramp car can follow the lane-4 leader)
+      //       gap_rear  >= s0 + v_follower*T_follower  (lane-4 follower can follow ramp car)
+      //   - If not safe, ramp car decelerates toward a virtual stop bar at progress=0.97
+      //     (just before the merge nose) using IDM with zero desired speed.
+
       const onrampCars = cars.filter(c => c.type === 'onramp')
                              .sort((a, b) => b.pos - a.pos);
       const rampOnLen  = Math.hypot(RAMP_ON_X1 - RAMP_ON_X0, RAMP_ON_Y1 - RAMP_ON_Y0);
 
+      // Merge nose position on lane 4 (pixel x where ramp meets highway)
+      const MERGE_NOSE = MERGE_X;  // = RAMP_ON_X1
+
       onrampCars.forEach((car, i) => {
-        const leader = onrampCars[i - 1] || null;
-        let maxMove  = car.vel;
-
-        if (leader) {
-          const gapProg = (CAR_H + mToPx(IDM_S0)) / rampOnLen;
-          const gap     = leader.pos - car.pos - gapProg;
-          if (gap <= 0) return;
-          maxMove = Math.min(maxMove, gap);
+        // ── Step A: IDM against ramp car ahead (queue on ramp) ──
+        const rampLeader = onrampCars[i - 1] || null;
+        let acc;
+        if (rampLeader) {
+          // Gap in progress units → convert to metres
+          const gapProg = rampLeader.pos - car.pos;
+          const gapPx   = gapProg * rampOnLen - CAR_H;  // subtract car length
+          const gap_m   = pxToM(Math.max(0, gapPx));
+          const v_ms    = spdToMs(car.vel * rampOnLen * FPS / rampOnLen); // vel is prog/frame
+          // vel in m/s: progress/frame * rampOnLen px/progress * M_PER_PX m/px * FPS frame/s
+          const vms     = car.vel * rampOnLen * M_PER_PX * FPS;
+          const vlms    = rampLeader.vel * rampOnLen * M_PER_PX * FPS;
+          acc = idmAcc(gap_m, vms, vlms, car.v0, car.T);
+        } else {
+          const vms = car.vel * rampOnLen * M_PER_PX * FPS;
+          acc = idmAccFree(vms, car.v0);
         }
 
-        // Yield check: stop at 55% up the ramp if lane 4 is blocked
-        if (car.pos > 0.55) {
-          const blocked = (lanes[4] || []).some(hc => Math.abs(hc.pos - MERGE_X) < MERGE_CLEAR);
-          if (blocked) maxMove = 0;
+        // ── Step B: Gap acceptance at merge nose ──
+        // Only relevant when car is near the merge nose (progress > 0.85)
+        const STOP_PROG = 0.90;  // virtual stop bar — stops ramp car safely before merge nose
+        if (car.pos > 0.85) {
+          // Find lane-4 cars: leader = first car AHEAD of merge nose (pos > MERGE_NOSE)
+          //                   follower = first car BEHIND merge nose (pos < MERGE_NOSE)
+          const lane4 = lanes[4] || [];
+          let l4Leader   = null;  // car ahead of merge nose on lane 4
+          let l4Follower = null;  // car behind (approaching) merge nose on lane 4
+          for (const hc of lane4) {
+            if (hc.pos >= MERGE_NOSE) {
+              // hc is ahead of or at the merge nose
+              if (!l4Leader || hc.pos < l4Leader.pos) l4Leader = hc;
+            } else {
+              // hc is behind the merge nose
+              if (!l4Follower || hc.pos > l4Follower.pos) l4Follower = hc;
+            }
+          }
+
+          // Ramp car's speed in m/s
+          const vms = car.vel * rampOnLen * M_PER_PX * FPS;
+
+          // Gap to lane-4 leader (car ahead of merge nose)
+          const gapFront_m = l4Leader
+            ? pxToM(Math.max(0, l4Leader.pos - MERGE_NOSE - CAR_W))
+            : Infinity;
+
+          // Gap from lane-4 follower to merge nose
+          const gapRear_m = l4Follower
+            ? pxToM(Math.max(0, MERGE_NOSE - (l4Follower.pos + CAR_W)))
+            : Infinity;
+
+          // Required minimum gap for acceptance: s0 + v * (T/2)
+          // Using half the desired time gap is a realistic aggressive-merge criterion.
+          // The full IDM gap (s0 + v*T) is too strict for the simulation scale.
+          const T_ACCEPT = 0.5;  // acceptance time gap [s] — half of typical T
+          const reqFront = IDM_S0 + vms * T_ACCEPT;
+          const followerVms = l4Follower ? spdToMs(l4Follower.vel) : 0;
+          const reqRear  = IDM_S0 + followerVms * T_ACCEPT;
+
+          const gapSafe = (gapFront_m >= reqFront) && (gapRear_m >= reqRear);
+
+          if (!gapSafe) {
+            // Not safe to merge — apply IDM braking toward the stop bar
+            const distToStop_prog = STOP_PROG - car.pos;
+            const distToStop_m   = pxToM(Math.max(0, distToStop_prog * rampOnLen));
+            // IDM against a stationary virtual vehicle at the stop bar
+            const accStop = idmAcc(distToStop_m, vms, 0, car.v0, car.T);
+            // Take the more restrictive of ramp-queue acc and stop-bar acc
+            acc = Math.min(acc, accStop);
+          }
+          // If safe, acc from Step A already applies (free road or ramp queue)
         }
 
-        car.pos += maxMove;
+        // ── Step C: Integrate velocity and position ──
+        // vel is in progress/frame; acc is in m/s²
+        // Convert acc to progress/frame²: acc_prog = acc_ms2 / (rampOnLen * M_PER_PX * FPS²)
+        const acc_prog = acc / (rampOnLen * M_PER_PX * FPS * FPS);
+        const velNewRamp = Math.max(0, car.vel + acc_prog);
+        car.pos += 0.5 * (car.vel + velNewRamp);  // ballistic integration
+        car.vel  = velNewRamp;
 
-        // Merge onto lane 4
+        // Post-update gap enforcement for ramp queue: prevent two ramp cars
+        // from occupying the same position when both stop at the stop bar.
+        if (rampLeader) {
+          const minGapProg = (CAR_H + mToPx(IDM_S0 * 0.5)) / rampOnLen;
+          if (car.pos + minGapProg > rampLeader.pos) {
+            car.pos = rampLeader.pos - minGapProg;
+            car.vel = Math.min(car.vel, rampLeader.vel);
+          }
+        }
+
+        // ── Step D: Merge when car reaches the nose AND gap is safe ──
         if (car.pos >= 1.0) {
-          car.type = 'lane4';
-          car.pos  = MERGE_X;
-          // Re-sample highway characteristics on merge
-          const ch = sampleCharacteristics();
-          car.v0  = ch.v0;
-          car.T   = ch.T;
-          car.vel = msToSpd(ch.v0 * 0.6);
-          car.lcCooldown = LC_COOLDOWN * 2; // don't immediately change lanes after merging
+          // Final safety check before teleporting onto lane 4
+          const lane4 = lanes[4] || [];
+          let l4Leader   = null;
+          let l4Follower = null;
+          for (const hc of lane4) {
+            if (hc.pos >= MERGE_NOSE) {
+              if (!l4Leader || hc.pos < l4Leader.pos) l4Leader = hc;
+            } else {
+              if (!l4Follower || hc.pos > l4Follower.pos) l4Follower = hc;
+            }
+          }
+          const vms = car.vel * rampOnLen * M_PER_PX * FPS;
+          const gapFront_m = l4Leader
+            ? pxToM(Math.max(0, l4Leader.pos - MERGE_NOSE - CAR_W))
+            : Infinity;
+          const gapRear_m = l4Follower
+            ? pxToM(Math.max(0, MERGE_NOSE - (l4Follower.pos + CAR_W)))
+            : Infinity;
+          const T_ACCEPT = 0.5;  // acceptance time gap [s]
+          const reqFront = IDM_S0 + vms * T_ACCEPT;
+          const followerVms = l4Follower ? spdToMs(l4Follower.vel) : 0;
+          const reqRear  = IDM_S0 + followerVms * T_ACCEPT;
+
+          if ((gapFront_m >= reqFront) && (gapRear_m >= reqRear)) {
+            // Safe to merge
+            car.type = 'lane4';
+            car.pos  = MERGE_NOSE;
+            // Keep existing v0/T (already sampled at car creation)
+            // Set entry velocity to match ramp speed, capped at v0
+            const entryVms = Math.min(vms, car.v0);
+            car.vel = msToSpd(entryVms);
+            car.lcCooldown = LC_COOLDOWN * 2;  // don't immediately change lanes after merging
+            // Update lanes array so subsequent cars see the new lane-4 car
+            if (!lanes[4]) lanes[4] = [];
+            lanes[4] = [...lanes[4], car].sort((a, b) => b.pos - a.pos);
+          } else {
+            // Gap not safe — clamp position to stop bar, zero velocity
+            car.pos = Math.min(car.pos, STOP_PROG);
+            car.vel = 0;
+          }
         }
       });
 
@@ -777,7 +932,8 @@
           ? Math.min(...onrampCars.map(c => c.pos))
           : 0;
         const newPos = Math.min(rearmost - 0.25, -0.1);
-        cars.push(makeCar('onramp', newPos, 0.005 + Math.random() * 0.003, undefined, 20, 1.5));
+        // Use normal driver characteristics (not hardcoded v0=20, T=1.5)
+        cars.push(makeCar('onramp', newPos, 0.003 + Math.random() * 0.002));
       }
     }
 
@@ -791,8 +947,19 @@
       const active = cars.filter(isVisible);
       for (let i = 0; i < active.length; i++) {
         for (let j = i + 1; j < active.length; j++) {
-          if (boxesOverlap(getBBox(active[i]), getBBox(active[j]))) {
-            crashPairs.push([active[i], active[j]]);
+          const a = active[i], b = active[j];
+          // Skip ramp-vs-lane4 pairs: they are on physically separate roads.
+          // Onramp cars waiting at the stop bar and offramp cars leaving the highway
+          // are geometrically close to lane 4 but on a different road surface.
+          const aIsRamp = a.type === 'onramp'  || a.type === 'offramp';
+          const bIsRamp = b.type === 'onramp'  || b.type === 'offramp';
+          const aIsL4   = a.type === 'lane4';
+          const bIsL4   = b.type === 'lane4';
+          if ((aIsRamp && bIsL4) || (bIsRamp && aIsL4)) continue;
+          if (boxesOverlap(getBBox(a), getBBox(b))) {
+            crashPairs.push([a, b]);
+            console.log('CRASH:', a.type, Math.round(a.pos), '<->', b.type, Math.round(b.pos),
+              'gap:', Math.round(b.pos - a.pos - CAR_W), 'px');
           }
         }
       }
@@ -849,8 +1016,9 @@
 
       ctx.fillStyle = '#4a4a4a';
       ctx.beginPath();
-      ctx.moveTo(RAMP_ON_X0 - 14, RAMP_ON_Y0);
-      ctx.lineTo(RAMP_ON_X0 + 14, RAMP_ON_Y0);
+      // Draw on-ramp as a filled trapezoid along the ramp path
+      ctx.moveTo(RAMP_ON_X0 - 10, RAMP_ON_Y0);
+      ctx.lineTo(RAMP_ON_X0 + 10, RAMP_ON_Y0);
       ctx.lineTo(RAMP_ON_X1 + 12, RAMP_ON_Y1);
       ctx.lineTo(RAMP_ON_X1 - 12, RAMP_ON_Y1);
       ctx.closePath();
@@ -858,10 +1026,11 @@
 
       ctx.fillStyle = '#4a4a4a';
       ctx.beginPath();
+      // Draw off-ramp as a filled trapezoid
       ctx.moveTo(RAMP_OFF_X0 - 12, RAMP_OFF_Y0);
       ctx.lineTo(RAMP_OFF_X0 + 12, RAMP_OFF_Y0);
-      ctx.lineTo(RAMP_OFF_X1 + 14, RAMP_OFF_Y1);
-      ctx.lineTo(RAMP_OFF_X1 - 14, RAMP_OFF_Y1);
+      ctx.lineTo(RAMP_OFF_X1 + 10, RAMP_OFF_Y1);
+      ctx.lineTo(RAMP_OFF_X1 - 10, RAMP_OFF_Y1);
       ctx.closePath();
       ctx.fill();
 
@@ -886,7 +1055,7 @@
       ctx.fillStyle = 'rgba(0,220,255,0.75)';
       ctx.font = '10px sans-serif';
       ctx.textAlign = 'center';
-      ctx.fillText('◄── MERGE_CLEAR ──►', MERGE_X, l4top - 4);
+      ctx.fillText('◄── merge zone ──►', MERGE_X, l4top - 4);
       ctx.textAlign = 'left';
 
       ctx.fillStyle = 'rgba(255,200,0,0.08)';
@@ -894,8 +1063,8 @@
 
       ctx.fillStyle = '#bbb';
       ctx.font = '11px sans-serif';
-      ctx.fillText('ON RAMP',  RAMP_ON_X0  - 14, RAMP_ON_Y0  + 16);
-      ctx.fillText('OFF RAMP', RAMP_OFF_X1 - 58, RAMP_OFF_Y1 + 16);
+      ctx.fillText('ON RAMP',  RAMP_ON_X0 + 4, RAMP_ON_Y0 + 16);
+      ctx.fillText('OFF RAMP', RAMP_OFF_X0 + 4, RAMP_OFF_Y1 + 16);
     }
 
     function drawCar(car) {
@@ -905,8 +1074,8 @@
         drawCarRect(car.pos, cy - CAR_H / 2, CAR_W, CAR_H, car.color);
         return;
       }
-      if (car.pos < 0 || car.pos > 1.05) return;
-      const { x, y } = rampPos(car.pos, car.type);
+      if (car.pos > 1.05) return;
+      const { x, y } = rampPos(Math.max(0, car.pos), car.type);
       if (x < -CAR_H || x > W + CAR_H || y < 0 || y > H) return;
       const s = CAR_H;
       drawCarRect(x - s / 2, y - s / 2, s, s, car.color);
