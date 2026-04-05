@@ -8,12 +8,12 @@ A project to create a web-based app that models automobile traffic patterns base
 Undecided / TBD
 
 ## Current status
-Initial browser-based app created (Phase 1 & 2 milestone).
+Phase 3 complete: multiple cars, 4-way intersection, traffic lights, and stop/go behavior.
 
 ## Next steps
-1. Add multiple cars (Phase 3)
-2. Add intersections and traffic lights
-3. Implement simple stop/go behavior
+1. Add start/pause/reset controls (Phase 4)
+2. Add simulation speed control
+3. Track basic metrics (car count, wait time)
 
 ## How to run   
 Simply open `index.html` in any modern web browser. No build steps or server required.
