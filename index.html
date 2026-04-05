@@ -222,7 +222,9 @@
             car.speed = 0.008 + Math.random() * 0.003;
           }
 
-          if (car.pos > W + CAR_W) car.pos = -(CAR_W + 20);
+          // Stagger re-entry by lane so cars from different lanes never
+          // wrap to the same x position and falsely collide off-screen
+          if (car.pos > W + CAR_W) car.pos = -(CAR_W + 20 + (n - 1) * 80);
         });
       }
 
@@ -260,7 +262,7 @@
           car.type  = 'lane4';
           car.pos   = MERGE_X;
           car.speed = 1.7 + Math.random() * 0.6;
-          car.color = rndColor();
+          // color intentionally preserved — car keeps its identity
         }
       });
 
@@ -287,20 +289,26 @@
           car.type  = 'onramp';
           car.pos   = -(0.2 + Math.random() * 0.8);
           car.speed = 0.005 + Math.random() * 0.003;
-          car.color = rndColor();
+          // color intentionally preserved
         }
       });
     }
 
     // ── Collision detection — ALL cars ────────────────────────────────────────
-    // Include ramp cars that are visible on screen (pos 0..1)
-    function isVisible(car) {
-      if (car.type.startsWith('lane')) return true;
+    // Only check cars that are actually on the canvas surface.
+    // Off-screen cars (still approaching from the left) must be excluded
+    // to prevent false-positive crashes between invisible cars.
+    function isOnCanvas(car) {
+      if (car.type.startsWith('lane')) {
+        // Lane car is on-canvas once its front edge has entered the canvas
+        return car.pos + CAR_W >= 0 && car.pos <= W;
+      }
+      // Ramp cars: only while progress is in the visible 0..1 range
       return car.pos >= 0 && car.pos <= 1.0;
     }
 
     function checkCollisions() {
-      const active = cars.filter(isVisible);
+      const active = cars.filter(isOnCanvas);
       for (let i = 0; i < active.length; i++) {
         for (let j = i + 1; j < active.length; j++) {
           if (boxesOverlap(getBBox(active[i]), getBBox(active[j]))) {
