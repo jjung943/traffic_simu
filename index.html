@@ -20,6 +20,38 @@
     }
     #header h1 { font-size: 1.2rem; letter-spacing: 0.05em; }
     #header p  { font-size: 0.78rem; color: #aaa; margin-top: 2px; }
+    #controls {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      margin-top: 6px;
+      font-size: 0.82rem;
+      color: #ccc;
+    }
+    #controls label { white-space: nowrap; }
+    #volumeSlider {
+      -webkit-appearance: none;
+      width: 180px;
+      height: 5px;
+      border-radius: 3px;
+      background: #444;
+      outline: none;
+      cursor: pointer;
+    }
+    #volumeSlider::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      width: 16px; height: 16px;
+      border-radius: 50%;
+      background: #3498DB;
+      cursor: pointer;
+    }
+    #volumeVal {
+      min-width: 28px;
+      text-align: left;
+      color: #3498DB;
+      font-weight: bold;
+    }
     canvas {
       display: block;
       width: 100%;
@@ -37,6 +69,12 @@
   <div id="header">
     <h1>Traffic Simulation — 4-Lane Highway</h1>
     <p>One-way (→) · 4 lanes · On/off ramp (lane 4) · Collision detection · No stopping in merge zone</p>
+    <div id="controls">
+      <label for="volumeSlider">Traffic Volume:</label>
+      <input type="range" id="volumeSlider" min="1" max="10" value="5" step="1" />
+      <span id="volumeVal">5</span>
+      <span style="color:#666">| 1 = sparse &nbsp; 10 = overloaded</span>
+    </div>
   </div>
   <canvas id="sim"></canvas>
   <div id="status">Running…</div>
@@ -137,31 +175,52 @@
     // Spawning is handled by the spawn system below.
     const cars = [];
 
-    // ── Spawn system ──────────────────────────────────────────────────────────
-    // Each lane has an independent spawn timer. When the timer fires and the
-    // entry zone is clear, a new car is created at the left edge.
-    const SPAWN_INTERVAL_MIN = 90;   // frames between spawns (min)
-    const SPAWN_INTERVAL_MAX = 180;  // frames between spawns (max)
+    // ── Traffic volume slider ─────────────────────────────────────────────────
+    // Volume 1–10 maps to spawn interval and max cars per lane.
+    // Higher volume = shorter interval + more cars allowed on screen.
+    const sliderEl  = document.getElementById('volumeSlider');
+    const volumeVal = document.getElementById('volumeVal');
+    let trafficVolume = parseInt(sliderEl.value, 10);
 
-    const spawnTimers = { 1: 0, 2: 30, 3: 60, 4: 90 }; // staggered initial delays
+    sliderEl.addEventListener('input', () => {
+      trafficVolume = parseInt(sliderEl.value, 10);
+      volumeVal.textContent = trafficVolume;
+    });
 
-    function rndSpawnInterval() {
-      return SPAWN_INTERVAL_MIN + Math.floor(Math.random() * (SPAWN_INTERVAL_MAX - SPAWN_INTERVAL_MIN));
+    // Volume → spawn interval (frames). Vol 1 = ~300 frames, Vol 10 = ~30 frames.
+    function spawnInterval() {
+      const base = Math.round(300 - (trafficVolume - 1) * (270 / 9));
+      return base + Math.floor(Math.random() * 30);
     }
+
+    // Volume → max lane cars allowed on canvas at once.
+    // Vol 1 = 2 cars/lane, Vol 10 = 12 cars/lane.
+    function maxCarsPerLane() {
+      return 2 + Math.round((trafficVolume - 1) * (10 / 9));
+    }
+
+    // ── Spawn system ──────────────────────────────────────────────────────────
+    const spawnTimers = { 1: 0, 2: 30, 3: 60, 4: 90 }; // staggered initial delays
 
     function trySpawnLane(n) {
       spawnTimers[n]--;
       if (spawnTimers[n] > 0) return;
 
-      // Check that the entry zone is clear
-      const entryX = 0;
       const laneCars = cars.filter(c => c.type === `lane${n}`);
-      const blocked  = laneCars.some(c => c.pos < CAR_W + FOLLOW_GAP * 3);
+
+      // Respect max density cap
+      if (laneCars.length >= maxCarsPerLane()) {
+        spawnTimers[n] = spawnInterval();
+        return;
+      }
+
+      // Check that the entry zone is clear
+      const blocked = laneCars.some(c => c.pos < CAR_W + FOLLOW_GAP * 3);
       if (!blocked) {
         const speed = 1.8 + Math.random() * 0.7;
         cars.push(makeCar(`lane${n}`, -CAR_W, speed));
       }
-      spawnTimers[n] = rndSpawnInterval();
+      spawnTimers[n] = spawnInterval();
     }
 
     // Seed a few cars immediately so the highway isn't empty at start
@@ -317,8 +376,11 @@
       for (let n = 1; n <= 4; n++) trySpawnLane(n);
 
       // ── Occasionally spawn a new on-ramp car if ramp is empty or sparse ──
+      // Probability scales with volume: Vol 1 = 0.001/frame, Vol 10 = 0.015/frame
+      const onrampMax   = 1 + Math.round((trafficVolume - 1) * (4 / 9)); // 1–5 ramp cars
+      const onrampProb  = 0.001 + (trafficVolume - 1) * (0.014 / 9);
       const onrampCount = cars.filter(c => c.type === 'onramp').length;
-      if (onrampCount < 3 && Math.random() < 0.005) {
+      if (onrampCount < onrampMax && Math.random() < onrampProb) {
         // Find the rearmost on-ramp car to queue behind
         const rearmost = onrampCars.length > 0
           ? Math.min(...onrampCars.map(c => c.pos))
