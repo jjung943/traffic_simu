@@ -8,12 +8,12 @@ A project to create a web-based app that models automobile traffic patterns base
 Undecided / TBD
 
 ## Current status
-Repository created. Planning initial setup.
+Initial browser-based app created (Phase 1 & 2 milestone).
 
 ## Next steps
-1. Choose stack
-2. Create starter app
-3. Add AI context docs
+1. Add multiple cars (Phase 3)
+2. Add intersections and traffic lights
+3. Implement simple stop/go behavior
 
 ## How to run   
-TBD - Joe to figure out
+Simply open `index.html` in any modern web browser. No build steps or server required.

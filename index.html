@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Traffic Simulation</title>
+  <style>
+    body {
+      margin: 0;
+      background: #1a1a2e;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      height: 100vh;
+      font-family: sans-serif;
+      color: #eee;
+    }
+    h1 {
+      margin-bottom: 16px;
+      font-size: 1.4rem;
+      letter-spacing: 0.05em;
+    }
+    canvas {
+      border: 2px solid #444;
+      border-radius: 4px;
+    }
+  </style>
+</head>
+<body>
+  <h1>Traffic Simulation — Milestone 1</h1>
+  <canvas id="sim" width="800" height="200"></canvas>
+
+  <script>
+    // --- Constants ---
+    const CANVAS_W = 800;
+    const CANVAS_H = 200;
+
+    const ROAD_Y      = 60;   // top of road
+    const ROAD_H      = 80;   // height of road
+    const LANE_Y      = ROAD_Y + ROAD_H / 2 - 10; // center lane for car
+
+    const CAR_W       = 40;
+    const CAR_H       = 20;
+    const CAR_SPEED   = 2;    // pixels per frame
+
+    // --- State ---
+    let carX = -CAR_W; // start just off the left edge
+
+    // --- Canvas setup ---
+    const canvas = document.getElementById("sim");
+    const ctx    = canvas.getContext("2d");
+
+    // --- Draw helpers ---
+    function drawRoad() {
+      // Road surface
+      ctx.fillStyle = "#555";
+      ctx.fillRect(0, ROAD_Y, CANVAS_W, ROAD_H);
+
+      // Dashed centre line
+      ctx.setLineDash([30, 20]);
+      ctx.strokeStyle = "#FFD700";
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.moveTo(0,        ROAD_Y + ROAD_H / 2);
+      ctx.lineTo(CANVAS_W, ROAD_Y + ROAD_H / 2);
+      ctx.stroke();
+      ctx.setLineDash([]); // reset dash
+    }
+
+    function drawCar(x) {
+      // Car body
+      ctx.fillStyle = "#E74C3C";
+      ctx.fillRect(x, LANE_Y, CAR_W, CAR_H);
+
+      // Windshield (simple lighter rectangle)
+      ctx.fillStyle = "#AED6F1";
+      ctx.fillRect(x + 6, LANE_Y + 4, CAR_W - 20, CAR_H - 8);
+
+      // Wheels
+      ctx.fillStyle = "#222";
+      ctx.fillRect(x + 4,        LANE_Y + CAR_H - 4, 10, 6);
+      ctx.fillRect(x + CAR_W - 14, LANE_Y + CAR_H - 4, 10, 6);
+    }
+
+    // --- Animation loop ---
+    function update() {
+      carX += CAR_SPEED;
+      if (carX > CANVAS_W) {
+        carX = -CAR_W; // wrap around
+      }
+    }
+
+    function render() {
+      // Clear
+      ctx.clearRect(0, 0, CANVAS_W, CANVAS_H);
+
+      drawRoad();
+      drawCar(carX);
+    }
+
+    function loop() {
+      update();
+      render();
+      requestAnimationFrame(loop);
+    }
+
+    loop();
+  </script>
+</body>
+</html>
