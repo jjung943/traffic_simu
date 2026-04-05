@@ -93,6 +93,42 @@
       text-align: left;
     }
 
+    /* ── Driver characteristics panel ── */
+    #char-panel {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-wrap: wrap;
+      gap: 10px 20px;
+      padding: 4px 12px;
+      font-size: 0.78rem;
+      color: #bbb;
+      background: rgba(255,255,255,0.03);
+      border-top: 1px solid #2a2a3a;
+    }
+    #char-panel .char-group {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    #char-panel label { white-space: nowrap; color: #aaa; }
+    #char-panel input[type=number] {
+      width: 58px;
+      background: #1e1e30;
+      border: 1px solid #444;
+      color: #eee;
+      border-radius: 4px;
+      padding: 2px 5px;
+      font-size: 0.78rem;
+      text-align: center;
+    }
+    #char-panel .char-title {
+      font-size: 0.72rem;
+      color: #666;
+      font-style: italic;
+      margin-right: 4px;
+    }
+
     canvas { display: block; width: 100%; }
     #status {
       text-align: center;
@@ -125,6 +161,27 @@
     <span id="dvr-label">Live</span>
   </div>
 
+  <!-- Driver characteristics panel -->
+  <div id="char-panel">
+    <span class="char-title">Driver Characteristics (applied to new cars):</span>
+    <div class="char-group">
+      <label>Speed μ (px/fr)</label>
+      <input type="number" id="speedMean" value="2.2" min="0.5" max="6" step="0.1" />
+    </div>
+    <div class="char-group">
+      <label>Speed σ</label>
+      <input type="number" id="speedSd" value="0.4" min="0" max="3" step="0.05" />
+    </div>
+    <div class="char-group">
+      <label>Follow gap μ (px)</label>
+      <input type="number" id="gapMean" value="18" min="2" max="120" step="1" />
+    </div>
+    <div class="char-group">
+      <label>Follow gap σ</label>
+      <input type="number" id="gapSd" value="8" min="0" max="60" step="1" />
+    </div>
+  </div>
+
   <canvas id="sim"></canvas>
   <div id="status">Running…</div>
 
@@ -133,15 +190,17 @@
     // ── Canvas ────────────────────────────────────────────────────────────────
     const canvas   = document.getElementById('sim');
     const ctx      = canvas.getContext('2d');
-    const headerEl = document.getElementById('header');
-    const dvrEl    = document.getElementById('dvr');
-    const STATUS_H = 24;
+    const headerEl  = document.getElementById('header');
+    const dvrEl     = document.getElementById('dvr');
+    const charPanel = document.getElementById('char-panel');
+    const STATUS_H  = 24;
 
     function resize() {
       canvas.width  = window.innerWidth;
       canvas.height = window.innerHeight
                       - headerEl.offsetHeight
                       - dvrEl.offsetHeight
+                      - charPanel.offsetHeight
                       - STATUS_H;
     }
     resize();
@@ -252,12 +311,44 @@
                     '#F39C12','#2ECC71','#E91E63','#00BCD4','#CDDC39','#FF5722'];
     function rndColor() { return COLORS[Math.floor(Math.random() * COLORS.length)]; }
 
-    function makeCar(type, pos, speed, color) {
+    // ── Normal distribution (Box-Muller transform) ────────────────────────────
+    function randNormal(mean, sd) {
+      if (sd <= 0) return mean;
+      let u, v;
+      do { u = Math.random(); } while (u === 0);
+      v = Math.random();
+      const z = Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v);
+      return mean + z * sd;
+    }
+
+    // Read current values from the driver characteristics inputs
+    function getCharParams() {
+      return {
+        speedMean : parseFloat(document.getElementById('speedMean').value) || 2.2,
+        speedSd   : parseFloat(document.getElementById('speedSd').value)   || 0,
+        gapMean   : parseFloat(document.getElementById('gapMean').value)   || 18,
+        gapSd     : parseFloat(document.getElementById('gapSd').value)     || 0,
+      };
+    }
+
+    // Sample a speed and follow-gap for a new car from the current distributions
+    function sampleCharacteristics() {
+      const p = getCharParams();
+      const speed     = Math.max(0.5, Math.min(6.0, randNormal(p.speedMean, p.speedSd)));
+      const followGap = Math.max(2,   Math.min(120,  randNormal(p.gapMean,  p.gapSd)));
+      return { speed, followGap };
+    }
+
+    function makeCar(type, pos, speed, color, followGap) {
       const id = nextId++;
       // Color is deterministic: same car ID always gets the same color.
       // This ensures colors don't change when rewinding and replaying.
       const assignedColor = color || COLORS[id % COLORS.length];
-      return { id, type, pos, speed, color: assignedColor };
+      // If followGap not provided, sample from distribution
+      const gap = (followGap !== undefined) ? followGap : sampleCharacteristics().followGap;
+      // If speed not provided, sample from distribution
+      const spd = (speed !== undefined) ? speed : sampleCharacteristics().speed;
+      return { id, type, pos, speed: spd, followGap: gap, color: assignedColor };
     }
 
     function rampPos(progress, type) {
@@ -301,11 +392,11 @@
         spawnTimers[n] = spawnInterval();
         return;
       }
-      const blocked = laneCars.some(c => c.pos < CAR_W + FOLLOW_GAP * 3);
-      if (!blocked) {
-        const speed = 1.8 + Math.random() * 0.7;
-        cars.push(makeCar(`lane${n}`, -CAR_W, speed));
-      }
+      const blocked = laneCars.some(c => c.pos < CAR_W + 36);
+        if (!blocked) {
+          const { speed, followGap } = sampleCharacteristics();
+          cars.push(makeCar(`lane${n}`, -CAR_W, speed, undefined, followGap));
+        }
       spawnTimers[n] = spawnInterval();
     }
 
@@ -313,7 +404,8 @@
       const offsets = [100, 320, 580, 860, 1150];
       for (let n = 1; n <= 4; n++) {
         offsets.forEach(off => {
-          cars.push(makeCar(`lane${n}`, -off, 1.8 + Math.random() * 0.7));
+          const { speed, followGap } = sampleCharacteristics();
+          cars.push(makeCar(`lane${n}`, -off, speed, undefined, followGap));
         });
       }
       cars.push(makeCar('onramp', -0.30, 0.006));
@@ -353,7 +445,7 @@
           let maxMove  = car.speed;
 
           if (leader) {
-            const gap = leader.pos - (car.pos + CAR_W) - FOLLOW_GAP;
+            const gap = leader.pos - (car.pos + CAR_W) - (car.followGap || FOLLOW_GAP);
             maxMove = Math.min(maxMove, Math.max(0, gap));
           }
 
@@ -391,7 +483,7 @@
         let maxMove  = car.speed;
 
         if (leader) {
-          const gapProg = (CAR_H + FOLLOW_GAP) / rampOnLen;
+          const gapProg = (CAR_H + (car.followGap || FOLLOW_GAP)) / rampOnLen;
           const gap     = leader.pos - car.pos - gapProg;
           if (gap <= 0) return;
           maxMove = Math.min(maxMove, gap);
@@ -405,9 +497,12 @@
         car.pos += maxMove;
 
         if (car.pos >= 1.0) {
-          car.type  = 'lane4';
-          car.pos   = MERGE_X;
-          car.speed = 1.7 + Math.random() * 0.6;
+          car.type = 'lane4';
+          car.pos  = MERGE_X;
+          // Re-sample highway speed from distribution on merge
+          const { speed, followGap } = sampleCharacteristics();
+          car.speed     = speed;
+          car.followGap = followGap;
         }
       });
 
@@ -419,7 +514,7 @@
         const leader = offrampCars[i - 1];
         let maxMove  = car.speed;
         if (leader) {
-          const gapProg = (CAR_H + FOLLOW_GAP) / rampOffLen;
+          const gapProg = (CAR_H + (car.followGap || FOLLOW_GAP)) / rampOffLen;
           const gap     = leader.pos - car.pos - gapProg;
           if (gap <= 0) return;
           maxMove = Math.min(maxMove, gap);
@@ -441,7 +536,8 @@
           ? Math.min(...onrampCars.map(c => c.pos))
           : 0;
         const newPos = Math.min(rearmost - 0.25, -0.1);
-        cars.push(makeCar('onramp', newPos, 0.005 + Math.random() * 0.003));
+        const { followGap } = sampleCharacteristics();
+        cars.push(makeCar('onramp', newPos, 0.005 + Math.random() * 0.003, undefined, followGap));
       }
     }
 
