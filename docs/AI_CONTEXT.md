@@ -14,6 +14,7 @@ Start with a browser-based version that is easy to run and easy to iterate on.
 - Explain what changed
 - Do not rename files unless needed
 - Keep simulation logic separate from rendering when possible
+- **Realism over Safety**: The simulation must model realistic physics and driver decisions. Artificial rules that prevent crashes (e.g., collision immunity grace periods, teleporting cars out of danger, or magic "ramp-awareness" sensors) are strictly forbidden. Crashes are a natural and expected outcome of dense traffic and must be allowed to occur.
 
 ## Current priority
 Begin implementing Phase 4: Controls and Metrics (start/pause/reset, speed controls, basic metrics).
