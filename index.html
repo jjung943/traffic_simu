@@ -673,13 +673,13 @@
       if (mode === 'live') {
         mode = 'paused';
       } else if (mode === 'paused' || mode === 'rewinding') {
-        if (crashed && playHead >= histLen - 2) {
-          // At crash frame — resuming would re-enter the crash immediately.
-          // User should reset instead.
-        } else {
-          restoreSnapshot(playHead); // resume from current scrub position
-          mode = 'live';
-        }
+        // Allow play from any rewound position, even after a crash.
+        // Clear the crash state so the simulation can run forward cleanly.
+        // If the same crash happens again naturally, it will be detected again.
+        restoreSnapshot(playHead);
+        crashed           = false;
+        crashPairs.length = 0;
+        mode              = 'live';
       }
       updateDvrUI();
     });
