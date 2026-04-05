@@ -25,3 +25,8 @@ Render a simple road layout and make one car move.
 - Read README.md and this file first
 - Prefer simple implementations over clever ones
 - Update docs when the project structure changes
+
+## When making changes
+- Update README if setup changes
+- Add or update tests
+- Keep commits focused
