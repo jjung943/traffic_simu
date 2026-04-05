@@ -30,14 +30,15 @@
 - [x] Implement post-crash Replay mode (frozen history replay without generating new frames)
 - [x] Ensure crash outlines and banners persist correctly during scrubbing and replay
 
-## Phase 5: Variability and complexity (Up Next)
-- [ ] Add various driver archetypes (e.g., aggressive, average, cautious)
+## Phase 5: Variability and complexity (In Progress)
+- [x] Implement normal distribution (Box-Muller transform) for per-car characteristic sampling
+- [x] Per-car **speed** drawn from N(μ, σ) — clamped to [0.5, 6.0] px/frame
+- [x] Per-car **follow gap** drawn from N(μ, σ) — clamped to [2, 120] px
+- [x] User-controllable μ and σ for both characteristics via the Driver Characteristics panel
+- [ ] Add additional driver archetypes (e.g., aggressive, average, cautious)
 - [ ] Assign driver archetypes characteristics
-    - Average distance between car and front car 
     - Propensity to switch lanes 
-    - Average speed 
     - Aggression  
-- [ ] Add variability in driver characteristics based on different probability distributions (e.g., normal, Gaussian)
 - [ ] Add toggles for each of the various behaviors to allow user to modify
 
 ## Phase 6: Simulation dashboard
