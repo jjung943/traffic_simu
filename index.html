@@ -252,7 +252,11 @@
     function rndColor() { return COLORS[Math.floor(Math.random() * COLORS.length)]; }
 
     function makeCar(type, pos, speed, color) {
-      return { id: nextId++, type, pos, speed, color: color || rndColor() };
+      const id = nextId++;
+      // Color is deterministic: same car ID always gets the same color.
+      // This ensures colors don't change when rewinding and replaying.
+      const assignedColor = color || COLORS[id % COLORS.length];
+      return { id, type, pos, speed, color: assignedColor };
     }
 
     function rampPos(progress, type) {
@@ -718,15 +722,26 @@
     });
 
     // Scrub bar: drag to jump to any recorded frame
+    // On mousedown/touchstart, freeze the max so it doesn't shift while dragging.
+    let scrubMax = 0;
+    scrubBar.addEventListener('mousedown',  () => { scrubMax = histLen - 1; scrubBar.max = scrubMax; });
+    scrubBar.addEventListener('touchstart', () => { scrubMax = histLen - 1; scrubBar.max = scrubMax; });
     scrubBar.addEventListener('input', () => {
-      const v = parseInt(scrubBar.value, 10);
-      if (v < histLen) {
-        playHead = v;
-        mode     = 'paused';
-        restoreSnapshot(playHead);
-        updateDvrUI();
+      const v = Math.min(parseInt(scrubBar.value, 10), histLen - 1);
+      playHead = v;
+      mode     = 'paused';
+      restoreSnapshot(playHead);
+      // Clear crash state so the overlay doesn't show on pre-crash frames.
+      // If user scrubs to the crash frame, the overlay will re-appear via drawCrashOverlay.
+      if (playHead < histLen - 2) {
+        crashed           = false;
+        crashPairs.length = 0;
       }
+      updateDvrUI();
     });
+    // When the user releases the scrub bar, re-sync max to current histLen.
+    scrubBar.addEventListener('mouseup',  () => { scrubBar.max = Math.max(0, histLen - 1); updateDvrUI(); });
+    scrubBar.addEventListener('touchend', () => { scrubBar.max = Math.max(0, histLen - 1); updateDvrUI(); });
 
     // ── Main loop ─────────────────────────────────────────────────────────────
     function update() {
@@ -746,6 +761,11 @@
         const step = speed();
         playHead = Math.max(0, playHead - step);
         restoreSnapshot(playHead);
+        // Clear crash overlay once we've rewound past the crash frame
+        if (crashed && playHead < histLen - 2) {
+          crashed           = false;
+          crashPairs.length = 0;
+        }
         if (playHead === 0) mode = 'paused'; // stop at beginning
         updateDvrUI();
       }
