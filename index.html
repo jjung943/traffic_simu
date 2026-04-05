@@ -197,11 +197,12 @@
     // ── Simulation state ──────────────────────────────────────────────────────
     let cars       = [];
     let crashed    = false;
+    let hasCrashed = false; // latches true permanently once a crash occurs; cleared only on Reset
     let crashPairs = [];   // pairs at crash frame (for overlay)
     let nextId     = 0;
 
     // ── DVR / playback state ──────────────────────────────────────────────────
-    // mode: 'live' | 'paused' | 'rewinding'
+    // mode: 'live' | 'paused' | 'rewinding' | 'replay'
     let mode          = 'live';
     const HISTORY_MAX = 1800;          // ~30 s at 60 fps
     const history     = [];            // ring buffer of snapshots
@@ -460,8 +461,9 @@
         }
       }
       if (crashPairs.length > 0) {
-        crashed = true;
-        mode    = 'paused';   // pause on crash — controls remain active
+        crashed    = true;
+        hasCrashed = true;  // latch: stays true until Reset
+        mode       = 'paused';   // pause on crash — controls remain active
         updateDvrUI();
       }
     }
@@ -667,6 +669,13 @@
         dvrLabel.textContent = `◀◀ ${pct}%`;
         statusEl.textContent = `Rewinding at ${spd}× — frame ${playHead} of ${histLen - 1}`;
         statusEl.style.color = '#3498DB';
+      } else if (mode === 'replay') {
+        btnPlay.textContent = '⏸ Pause';
+        btnPlay.classList.remove('active');
+        btnRew.classList.remove('active');
+        dvrLabel.textContent = `▶ ${pct}%`;
+        statusEl.textContent = `Replaying at ${spd}× — frame ${playHead} of ${histLen - 1}`;
+        statusEl.style.color = '#2ECC71';
       }
     }
 
@@ -674,16 +683,18 @@
 
     // Play/Pause
     btnPlay.addEventListener('click', () => {
-      if (mode === 'live') {
+      if (mode === 'live' || mode === 'replay') {
         mode = 'paused';
       } else if (mode === 'paused' || mode === 'rewinding') {
-        // Allow play from any rewound position, even after a crash.
-        // Clear the crash state so the simulation can run forward cleanly.
-        // If the same crash happens again naturally, it will be detected again.
         restoreSnapshot(playHead);
         crashed           = false;
         crashPairs.length = 0;
-        mode              = 'live';
+        if (hasCrashed) {
+          // A crash has occurred this session: replay frozen history, never generate new frames.
+          mode = 'replay';
+        } else {
+          mode = 'live';
+        }
       }
       updateDvrUI();
     });
@@ -696,6 +707,7 @@
       histLen           = 0;
       playHead          = 0;
       crashed           = false;
+      hasCrashed        = false;
       crashPairs.length = 0;
       spawnTimers       = { 1: 0, 2: 30, 3: 60, 4: 90 };
       speedIdx          = 0;
@@ -767,6 +779,17 @@
           crashPairs.length = 0;
         }
         if (playHead === 0) mode = 'paused'; // stop at beginning
+        updateDvrUI();
+      } else if (mode === 'replay') {
+        // After a crash: step forward through frozen history — never generate new frames.
+        const step = speed();
+        playHead = Math.min(histLen - 1, playHead + step);
+        restoreSnapshot(playHead);
+        // Re-show crash overlay when we reach the crash frame
+        if (playHead >= histLen - 2) {
+          crashed = true;
+          mode    = 'paused';
+        }
         updateDvrUI();
       }
       // mode === 'paused': nothing to update
