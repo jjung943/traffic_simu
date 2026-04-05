@@ -16,4 +16,4 @@ Repository created. Planning initial setup.
 3. Add AI context docs
 
 ## How to run   
-TBD
+TBD - Joe to figure out
